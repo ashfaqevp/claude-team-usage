@@ -33,9 +33,30 @@ current 5-hour window (see aggregation rule below).
 
 ## Aggregation rule
 
-Group snapshots by `session_id` and take the **latest** snapshot per session before
-summing anything. Never sum raw rows — since `cost_usd` is cumulative within a
-session, summing every row for a session would massively overcount.
+Group snapshots by `session_id` before summing anything — never sum raw rows, since
+`cost_usd` is cumulative within a session and summing every row for a session would
+massively overcount.
+
+A session's contribution to a window is **not** simply its latest snapshot's raw
+`cost_usd`. Claude Code has a known bug where a resumed session's `cost.total_cost_usd`
+can reset to a value lower than an earlier snapshot in the same session
+(https://github.com/anthropics/claude-code/issues/13088). To protect against that, each
+session's cost is computed by walking its snapshots in time order and
+**delta-accumulating**: add only the increase over the session's previous snapshot,
+clamping negative deltas (drops) to zero instead of subtracting. A dropped/ignored
+decrease is logged as a one-line warning for visibility, without blocking anything else.
+
+This is deliberately delta-based rather than "clamp to the highest `cost_usd` seen so
+far" (a simpler running-max approach that was tried and replaced) — running-max hides
+any real spend that accrues between a reset and the point the total climbs back past
+its old peak. Example: readings `[5, 8, 2, 4, 6, 9]` should total **15** (every real
+increase, including the climb 2→4→6 after the reset), not **9** (the running max).
+
+Implemented identically in two places, which must be kept in sync:
+- Extension: `extension/src/usage.ts`, `latestPerSession()`.
+- Supabase: `public.session_delta_cost()` (`supabase/schema.sql`), which both
+  `get_team_window_summary()` and `daily_usage` read session cost through — no other
+  function/view should reimplement this independently.
 
 ## Privacy
 
@@ -83,12 +104,16 @@ dashboard), `supabase/` (shared schema, sibling to both), `CONTEXT.md`,
   `public.usage_snapshots` (schema in `supabase/schema.sql`, applied directly via the
   Supabase MCP tool — that file is kept as source of truth / for manual
   re-application). RLS is enabled: `anon` can INSERT only (`with check (true)`), never
-  SELECT. `public.get_team_window_summary()` is a SECURITY DEFINER RPC granted to
-  `anon` that returns aggregates only (one row per user_name: window_cost_usd, plus
-  the latest account-wide five_hour_pct/seven_day_pct/reset timestamps) — no raw
-  rows, no prompt/content data ever leave via this path. `public.latest_per_user` and
+  SELECT. `public.session_delta_cost()` is a SECURITY DEFINER helper (not grantable to
+  anon/authenticated) that returns one delta-accumulated `cost_usd` per `session_id`
+  (see Aggregation rule above). `public.get_team_window_summary()` is a SECURITY
+  DEFINER RPC granted to `anon`, built on top of `session_delta_cost()`, that returns
+  aggregates only (one row per user_name: window_cost_usd, plus the latest
+  account-wide five_hour_pct/seven_day_pct/reset timestamps) — no raw rows, no
+  prompt/content data ever leave via this path. `public.latest_per_user` and
   `public.daily_usage` views are for the future admin dashboard, granted to
-  `service_role` only.
+  `service_role` only; `daily_usage` also reads session cost through
+  `session_delta_cost()`.
 - `src/identity.ts` resolves a per-developer label (config override → git global
   email/name → generated `~/.claude/team-usage/device-id.txt`) for labeling only —
   no login, no auth. Cached in memory once per extension session.

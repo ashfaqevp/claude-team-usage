@@ -65,17 +65,57 @@ function tsMillis(s: Snapshot): number {
   return Number.isFinite(t) ? t : 0;
 }
 
-/** One entry per session_id, keeping the latest snapshot (cost is cumulative within a session). */
+// Claude Code has a known bug where a resumed session's cost.total_cost_usd can reset
+// to a value lower than an earlier snapshot in the same session:
+// https://github.com/anthropics/claude-code/issues/13088
+const COST_RESET_BUG_URL = 'https://github.com/anthropics/claude-code/issues/13088';
+
+/**
+ * One entry per session_id, keeping the latest snapshot by timestamp, but with
+ * `cost_usd` replaced by a delta-accumulated total: for each snapshot in time order we
+ * add only the increase over the session's previous snapshot, clamping negative deltas
+ * to zero instead of subtracting. This still captures real spend that accrues after a
+ * resumed session's cost.total_cost_usd resets to a lower value (see
+ * COST_RESET_BUG_URL) — unlike simply clamping to the highest value seen so far, which
+ * would hide any spend between the reset and the point the total climbs back past its
+ * old peak. A one-line warning is logged whenever a drop is detected and ignored.
+ */
 export function latestPerSession(snapshots: Snapshot[]): Snapshot[] {
+  const sorted = [...snapshots].sort((a, b) => tsMillis(a) - tsMillis(b));
   const bySession = new Map<string, Snapshot>();
+  const accumulatedCostBySession = new Map<string, number>();
+  const lastRawCostBySession = new Map<string, number>();
   let fallbackIndex = 0;
-  for (const s of snapshots) {
+
+  for (const s of sorted) {
     const key = s.session_id != null ? s.session_id : `__no-session-${fallbackIndex++}`;
-    const existing = bySession.get(key);
-    if (!existing || tsMillis(s) >= tsMillis(existing)) {
-      bySession.set(key, s);
+    let snapshot = s;
+
+    if (typeof s.cost_usd === 'number') {
+      const prevRaw = lastRawCostBySession.get(key);
+      let accumulated: number;
+
+      if (prevRaw == null) {
+        accumulated = s.cost_usd;
+      } else {
+        const delta = s.cost_usd - prevRaw;
+        if (delta < 0) {
+          console.warn(
+            `[claude-team-usage] session ${key}: cost_usd dropped from ${prevRaw} to ${s.cost_usd} ` +
+              `(known Claude Code resumed-session bug, ${COST_RESET_BUG_URL}) — ignoring the decrease`
+          );
+        }
+        accumulated = (accumulatedCostBySession.get(key) ?? 0) + Math.max(0, delta);
+      }
+
+      accumulatedCostBySession.set(key, accumulated);
+      lastRawCostBySession.set(key, s.cost_usd);
+      snapshot = { ...s, cost_usd: accumulated };
     }
+
+    bySession.set(key, snapshot);
   }
+
   return Array.from(bySession.values());
 }
 
