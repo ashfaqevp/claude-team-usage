@@ -72,5 +72,35 @@ code, or file contents.
   bars, the developer's cost/tokens this window, and a table of daily peaks — all
   computed from the local log.
 
-Not yet built: Supabase sync and the admin dashboard (Phase 3+). The extension does
-not talk to the network in this phase.
+## Status quo (Phase 3 complete)
+
+- Supabase project `htrxdxtbrkdabrrqbpyr` (region ap-southeast-1) holds
+  `public.usage_snapshots` (schema in `supabase/schema.sql`, applied directly via the
+  Supabase MCP tool — that file is kept as source of truth / for manual
+  re-application). RLS is enabled: `anon` can INSERT only (`with check (true)`), never
+  SELECT. `public.get_team_window_summary()` is a SECURITY DEFINER RPC granted to
+  `anon` that returns aggregates only (one row per user_name: window_cost_usd, plus
+  the latest account-wide five_hour_pct/seven_day_pct/reset timestamps) — no raw
+  rows, no prompt/content data ever leave via this path. `public.latest_per_user` and
+  `public.daily_usage` views are for the future admin dashboard, granted to
+  `service_role` only.
+- `src/identity.ts` resolves a per-developer label (config override → git global
+  email/name → generated `~/.claude/team-usage/device-id.txt`) for labeling only —
+  no login, no auth. Cached in memory once per extension session.
+- `src/supabaseClient.ts` / `src/sync.ts` / `src/team.ts` — the extension's 30s timer
+  (in `src/extension.ts`) now also uploads unsynced `local-log.jsonl` lines to
+  `usage_snapshots` (cursor tracked in `globalState`, only advanced on HTTP success)
+  and calls `get_team_window_summary()` to show "you ≈ X% of the shared 5h limit
+  (team at Y%)" in the status bar and panel. Sync is additive and silent: if
+  `claudeUsage.supabaseUrl` / `claudeUsage.supabaseAnonKey` are unset, or the RPC is
+  unreachable, everything falls back to the Phase 2 local-only display — the local
+  log stays the source of truth.
+- New settings: `claudeUsage.supabaseUrl`, `claudeUsage.supabaseAnonKey`,
+  `claudeUsage.userNameOverride`. `supabaseUrl`/`supabaseAnonKey` default to the
+  shared team project's URL and publishable/anon key (safe to ship — insert-only,
+  aggregates-only RPC) so the extension works with zero manual setup out of the box;
+  `userNameOverride` defaults to empty (auto-derived from git identity). Setting
+  either of the first two to an empty string disables sync entirely.
+
+Not yet built: the admin dashboard (Phase 4+), which will read `latest_per_user` /
+`daily_usage` with the service_role key.

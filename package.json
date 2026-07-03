@@ -17,7 +17,27 @@
         "command": "claudeTeamUsage.showUsage",
         "title": "Claude Usage: Show my usage"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Claude Team Usage",
+      "properties": {
+        "claudeUsage.supabaseUrl": {
+          "type": "string",
+          "default": "https://htrxdxtbrkdabrrqbpyr.supabase.co",
+          "description": "Supabase project URL to sync usage snapshots to. Defaults to the shared team project — leave empty to disable sync entirely (local features keep working without it)."
+        },
+        "claudeUsage.supabaseAnonKey": {
+          "type": "string",
+          "default": "sb_publishable_-0NlO4LiFuIAaMgomMTzBQ_oW8brIVp",
+          "description": "Supabase anon/publishable key used to sync usage snapshots. This is a publishable key (insert-only, aggregates-only RPC) — safe to ship as a default. Leave empty to disable sync entirely."
+        },
+        "claudeUsage.userNameOverride": {
+          "type": "string",
+          "default": "",
+          "description": "Optional label to identify you in shared usage data, instead of your git identity or a generated device id."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

@@ -260,13 +260,25 @@ projects/docs may still say "anon" and "service_role") — same two roles, same
 behavior. Wherever this guide says "anon key," use your **publishable key**.
 Wherever it says "service role key," use your **secret key**.
 
+**Automation note:** if your Claude Code session has a Supabase MCP connection with
+access to this project, tell it so in the prompt (project ID: your Supabase project
+ref, visible in the dashboard URL) — it can apply the migration directly and verify
+it with real queries, instead of you copy-pasting SQL into the web editor by hand.
+The prompt below covers both paths.
+
 ### PROMPT (paste into Claude Code)
 
 ```
 Read CONTEXT.md. This is Phase 3: add Supabase. Keep everything from Phase 2 working
 (the local log stays the source of truth; sync is additive).
 
-1. Create supabase/schema.sql:
+My Supabase project ID is: htrxdxtbrkdabrrqbpyr
+If you have a connected Supabase tool that can reach this project ID, use it directly
+to apply the migration and to verify it — don't just write a file and stop. If you
+don't have Supabase tool access, write supabase/schema.sql instead and tell me
+exactly what to paste into the Supabase SQL editor.
+
+1. Migration (apply directly if you can, else write to supabase/schema.sql):
    - Table public.usage_snapshots (id bigint identity PK, user_name text not null,
      machine text, session_id text, cost_usd numeric, five_hour_pct numeric,
      five_hour_resets_at timestamptz, seven_day_pct numeric, seven_day_resets_at
@@ -284,7 +296,13 @@ Read CONTEXT.md. This is Phase 3: add Supabase. Keep everything from Phase 2 wor
    - A view public.latest_per_user (distinct on user_name, latest row) and a view
      public.daily_usage (per user_name, per day in Asia/Kolkata: peak_5h, peak_7d,
      sum of latest-per-session cost, session count). Grant select on these to
-     service_role only (the dashboard uses the service key).
+     service_role only (the dashboard uses the secret/service role key).
+
+   If you applied this directly: immediately verify with real queries — insert one
+   test row via execute_sql, call get_team_window_summary() and confirm it returns
+   the row, then try to select raw rows from usage_snapshots AS IF you were the anon
+   role (or explain how you confirmed RLS blocks it) and report the results plainly
+   before moving on.
 
 2. In the extension, add config settings: claudeUsage.supabaseUrl,
    claudeUsage.supabaseAnonKey, claudeUsage.userNameOverride (optional, empty by default).
@@ -319,10 +337,19 @@ columns listed.
 
 ### TEST
 
+If Claude Code applied the migration directly and reported verification results,
+review what it showed you and sanity-check it makes sense — you don't need to repeat
+the manual steps below. If it wrote `supabase/schema.sql` instead (no MCP access),
+do these manually:
+
 - Run `supabase/schema.sql` in the Supabase SQL editor (no errors).
 - In the Supabase table editor, insert one row by hand. In the SQL editor run
   `select * from get_team_window_summary();` → returns your row aggregated.
-- Set the three config values in the Extension Development Host settings. Use Claude
+
+Either way, finish with the real end-to-end test:
+
+- Set the three config values (`supabaseUrl`, `supabaseAnonKey`, optional
+  `userNameOverride`) in the Extension Development Host settings. Use Claude
   Code for real once → confirm a new row lands in `usage_snapshots` and the status bar
   now shows "you ≈ X% ... team at Y%".
 - Confirm the publishable key **cannot** read raw rows: try `select * from usage_snapshots`

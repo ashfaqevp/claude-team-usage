@@ -11,6 +11,9 @@ import {
   formatPct,
   formatCountdown,
 } from './usage';
+import { syncLocalLog } from './sync';
+import { fetchTeamSlice, TeamSlice } from './team';
+import { resolveIdentity } from './identity';
 
 const TEAM_USAGE_DIR = path.join(os.homedir(), '.claude', 'team-usage');
 const LOGGER_DEST = path.join(TEAM_USAGE_DIR, 'usage-logger.js');
@@ -27,7 +30,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   statusBarItem.command = 'claudeTeamUsage.showUsage';
   context.subscriptions.push(statusBarItem);
 
-  const refresh = () => updateStatusBar(statusBarItem);
+  const refresh = () => {
+    updateStatusBar(statusBarItem).catch(() => {});
+    syncLocalLog(context, LOCAL_LOG_FILE).catch(() => {});
+  };
   refresh();
   const interval = setInterval(refresh, STATUS_BAR_UPDATE_INTERVAL_MS);
   context.subscriptions.push({ dispose: () => clearInterval(interval) });
@@ -124,38 +130,83 @@ function loadSnapshots(): Snapshot[] {
   return readLocalLog(LOCAL_LOG_FILE);
 }
 
-function updateStatusBar(item: vscode.StatusBarItem): void {
+/** Tries the team RPC if Supabase is configured; null on any failure so callers fall back to local-only display. */
+async function tryFetchTeamSlice(): Promise<TeamSlice | null> {
   try {
-    const snapshots = loadSnapshots();
-    const summary = summarizeCurrentWindow(snapshots);
+    const cfg = vscode.workspace.getConfiguration('claudeUsage');
+    const url = (cfg.get<string>('supabaseUrl') || '').trim();
+    const anonKey = (cfg.get<string>('supabaseAnonKey') || '').trim();
+    if (!url || !anonKey) return null;
+    return await fetchTeamSlice(url, anonKey, resolveIdentity());
+  } catch {
+    return null;
+  }
+}
 
-    item.text = `$(pulse) 5h ${formatPct(summary.accountFiveHourPct)} team · you ${formatUsd(
-      summary.windowCostUsd
-    )}`;
+function teamSliceLine(teamSlice: TeamSlice): string {
+  return `you ≈ ${formatPct(teamSlice.myPct)} of the shared 5h limit (team at ${formatPct(
+    teamSlice.accountFiveHourPct
+  )})`;
+}
 
-    const tooltip = new vscode.MarkdownString();
-    tooltip.appendMarkdown(`**Claude Team Usage**\n\n`);
-    tooltip.appendMarkdown(`5h resets in ${formatCountdown(summary.fiveHourResetsAt)}\n\n`);
-    tooltip.appendMarkdown(`7d used: ${formatPct(summary.accountSevenDayPct)} (account-wide)\n\n`);
-    tooltip.appendMarkdown(`Your cost this window: ${formatUsd(summary.windowCostUsd)}\n\n`);
-    tooltip.appendMarkdown(
-      `Your tokens this window: ${summary.windowInputTokens.toLocaleString()} in / ${summary.windowOutputTokens.toLocaleString()} out\n\n`
-    );
-    tooltip.appendMarkdown(`_Click for the full usage panel._`);
-    item.tooltip = tooltip;
+function paintStatusBar(
+  item: vscode.StatusBarItem,
+  summary: ReturnType<typeof summarizeCurrentWindow>,
+  teamSlice: TeamSlice | null
+): void {
+  item.text = teamSlice
+    ? `$(pulse) ${teamSliceLine(teamSlice)}`
+    : `$(pulse) 5h ${formatPct(summary.accountFiveHourPct)} team · you ${formatUsd(summary.windowCostUsd)}`;
 
-    const pct = summary.accountFiveHourPct;
-    if (typeof pct === 'number' && pct >= 80) {
-      item.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
-    } else if (typeof pct === 'number' && pct >= 50) {
-      item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-    } else {
-      item.backgroundColor = undefined;
-    }
+  const tooltip = new vscode.MarkdownString();
+  tooltip.appendMarkdown(`**Claude Team Usage**\n\n`);
+  if (teamSlice) {
+    tooltip.appendMarkdown(`${teamSliceLine(teamSlice)}\n\n`);
+  }
+  tooltip.appendMarkdown(`5h resets in ${formatCountdown(summary.fiveHourResetsAt)}\n\n`);
+  tooltip.appendMarkdown(`7d used: ${formatPct(summary.accountSevenDayPct)} (account-wide)\n\n`);
+  tooltip.appendMarkdown(`Your cost this window: ${formatUsd(summary.windowCostUsd)}\n\n`);
+  tooltip.appendMarkdown(
+    `Your tokens this window: ${summary.windowInputTokens.toLocaleString()} in / ${summary.windowOutputTokens.toLocaleString()} out\n\n`
+  );
+  tooltip.appendMarkdown(`_Click for the full usage panel._`);
+  item.tooltip = tooltip;
+
+  const pct = teamSlice ? teamSlice.accountFiveHourPct : summary.accountFiveHourPct;
+  if (typeof pct === 'number' && pct >= 80) {
+    item.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+  } else if (typeof pct === 'number' && pct >= 50) {
+    item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+  } else {
+    item.backgroundColor = undefined;
+  }
+}
+
+async function updateStatusBar(item: vscode.StatusBarItem): Promise<void> {
+  let summary: ReturnType<typeof summarizeCurrentWindow>;
+  try {
+    summary = summarizeCurrentWindow(loadSnapshots());
   } catch (err) {
     item.text = `$(pulse) 5h -- team`;
     item.tooltip = `Claude Team Usage: couldn't read the local log — ${String(err)}`;
     item.backgroundColor = undefined;
+    return;
+  }
+
+  // Paint the local-only view first so a slow/unreachable Supabase RPC never stalls
+  // the status bar for a full tick — the team line lands as a follow-up update.
+  try {
+    paintStatusBar(item, summary, null);
+  } catch (err) {
+    item.text = `$(pulse) 5h -- team`;
+    item.tooltip = `Claude Team Usage: couldn't read the local log — ${String(err)}`;
+    item.backgroundColor = undefined;
+    return;
+  }
+
+  const teamSlice = await tryFetchTeamSlice();
+  if (teamSlice) {
+    paintStatusBar(item, summary, teamSlice);
   }
 }
 
@@ -175,11 +226,12 @@ function showUsagePanel(context: vscode.ExtensionContext): void {
     { enableScripts: false }
   );
 
-  const render = () => {
+  const render = async () => {
     const snapshots = loadSnapshots();
     const summary = summarizeCurrentWindow(snapshots);
     const peaks = dailyPeaks(snapshots);
-    panel.webview.html = renderHtml(summary, peaks);
+    const teamSlice = await tryFetchTeamSlice();
+    panel.webview.html = renderHtml(summary, peaks, teamSlice);
   };
 
   render();
@@ -189,7 +241,8 @@ function showUsagePanel(context: vscode.ExtensionContext): void {
 
 function renderHtml(
   summary: ReturnType<typeof summarizeCurrentWindow>,
-  peaks: ReturnType<typeof dailyPeaks>
+  peaks: ReturnType<typeof dailyPeaks>,
+  teamSlice: TeamSlice | null
 ): string {
   const bar = (pct: number | null, colorVar: string) => {
     const clamped = typeof pct === 'number' ? Math.max(0, Math.min(100, pct)) : 0;
@@ -243,6 +296,12 @@ function renderHtml(
 </style>
 </head>
 <body>
+  ${
+    teamSlice
+      ? `<h2>Team</h2>
+  <div class="stat">${teamSliceLine(teamSlice)}</div>`
+      : ''
+  }
   <h2>This 5-hour window</h2>
   <div class="row">
     <div class="label"><span>Account 5h usage</span><span>${formatPct(summary.accountFiveHourPct)}</span></div>
