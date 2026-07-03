@@ -37,23 +37,26 @@ create policy "anon can insert usage snapshots"
   to anon
   with check (true);
 
--- Shared helper: one row per session_id (the latest snapshot's user_name/recorded_at),
--- with cost_usd computed as a delta-accumulated total rather than the latest raw
--- reading. Claude Code has a known bug where a resumed session's cost.total_cost_usd
--- can reset to a value lower than an earlier snapshot in the same session
--- (https://github.com/anthropics/claude-code/issues/13088). Rather than clamping to
--- the highest value seen so far (which would hide any real spend between the reset and
--- the point the total climbs back past its old peak), we sum only the increase over
--- each session's previous snapshot, clamping negative deltas (drops) to zero. A warning
--- is logged (visible in Postgres logs) whenever a drop is detected and ignored, without
--- blocking the rest of the query. Both get_team_window_summary and daily_usage read
--- session cost through this function so the two stay consistent.
-create or replace function public.session_delta_cost()
+-- Shared helper: one row PER SNAPSHOT (not per session), each carrying only the
+-- increase over that session's previous snapshot, clamped to zero on drops. Claude
+-- Code has a known bug where a resumed session's cost.total_cost_usd can reset to a
+-- value lower than an earlier snapshot in the same session
+-- (https://github.com/anthropics/claude-code/issues/13088); a warning is logged
+-- (visible in Postgres logs) whenever a drop is detected and ignored, without blocking
+-- the rest of the query.
+--
+-- Returning per-snapshot deltas (rather than one pre-summed total per session) lets
+-- callers filter/group by each delta's own recorded_at — e.g. by 5-hour window or by
+-- calendar day — so a session that spans a window or day boundary gets its cost split
+-- correctly between them, instead of dumping its entire lifetime total into whichever
+-- bucket its latest snapshot happens to land in. Both get_team_window_summary and
+-- daily_usage read session cost through this function so the two stay consistent.
+create or replace function public.session_cost_deltas()
 returns table (
   user_name text,
   session_id text,
-  cost_usd numeric,
-  recorded_at timestamptz
+  recorded_at timestamptz,
+  cost_delta numeric
 )
 language plpgsql
 security definer
@@ -77,40 +80,24 @@ begin
   end loop;
 
   return query
-  with deltas as (
-    select
-      s.user_name,
-      s.session_id,
-      s.recorded_at,
-      s.cost_usd as raw_cost_usd,
-      lag(s.cost_usd) over (partition by s.session_id order by s.recorded_at) as prior_cost_usd
-    from public.usage_snapshots s
-    where s.session_id is not null and s.cost_usd is not null
-  ),
-  accumulated as (
-    select
-      d.user_name,
-      d.session_id,
-      d.recorded_at,
-      sum(
-        case
-          when d.prior_cost_usd is null then d.raw_cost_usd
-          else greatest(d.raw_cost_usd - d.prior_cost_usd, 0)
-        end
-      ) over (
-        partition by d.session_id order by d.recorded_at
-        rows between unbounded preceding and current row
-      ) as cost_usd
-    from deltas d
-  )
-  select distinct on (accumulated.session_id)
-    accumulated.user_name, accumulated.session_id, accumulated.cost_usd, accumulated.recorded_at
-  from accumulated
-  order by accumulated.session_id, accumulated.recorded_at desc;
+  select
+    s.user_name,
+    s.session_id,
+    s.recorded_at,
+    case
+      when lag(s.cost_usd) over (partition by s.session_id order by s.recorded_at) is null
+        then s.cost_usd
+      else greatest(
+        s.cost_usd - lag(s.cost_usd) over (partition by s.session_id order by s.recorded_at),
+        0
+      )
+    end as cost_delta
+  from public.usage_snapshots s
+  where s.session_id is not null and s.cost_usd is not null;
 end;
 $$;
 
-revoke all on function public.session_delta_cost() from public, anon, authenticated;
+revoke all on function public.session_cost_deltas() from public, anon, authenticated;
 
 -- Aggregates-only RPC for the extension's team view. SECURITY DEFINER so it can read
 -- raw rows (owned by postgres, which bypasses RLS) while anon itself never can.
@@ -144,21 +131,22 @@ as $$
     from latest_rate_limits
     where five_hour_resets_at is not null
   ),
-  latest_per_session as (
-    select * from public.session_delta_cost()
+  deltas_in_window as (
+    select scd.user_name, scd.cost_delta
+    from public.session_cost_deltas() scd
+    cross join window_bounds wb
+    where scd.recorded_at >= wb.window_start and scd.recorded_at <= wb.window_end
   )
   select
-    lps.user_name,
-    sum(coalesce(lps.cost_usd, 0)) as window_cost_usd,
+    diw.user_name,
+    sum(coalesce(diw.cost_delta, 0)) as window_cost_usd,
     lrl.five_hour_pct as account_five_hour_pct,
     lrl.seven_day_pct as account_seven_day_pct,
     lrl.five_hour_resets_at,
     lrl.seven_day_resets_at
-  from latest_per_session lps
+  from deltas_in_window diw
   cross join latest_rate_limits lrl
-  cross join window_bounds wb
-  where lps.recorded_at >= wb.window_start and lps.recorded_at <= wb.window_end
-  group by lps.user_name, lrl.five_hour_pct, lrl.seven_day_pct, lrl.five_hour_resets_at, lrl.seven_day_resets_at;
+  group by diw.user_name, lrl.five_hour_pct, lrl.seven_day_pct, lrl.five_hour_resets_at, lrl.seven_day_resets_at;
 $$;
 
 revoke all on function public.get_team_window_summary() from public;
@@ -174,14 +162,31 @@ from public.usage_snapshots
 order by user_name, recorded_at desc;
 
 create or replace view public.daily_usage as
-with per_session as (
+with delta_days as (
   select
-    user_name,
-    session_id,
-    cost_usd,
-    recorded_at,
-    (recorded_at at time zone 'Asia/Kolkata')::date as day
-  from public.session_delta_cost()
+    scd.user_name,
+    scd.cost_delta,
+    (scd.recorded_at at time zone 'Asia/Kolkata')::date as day
+  from public.session_cost_deltas() scd
+),
+day_costs as (
+  select user_name, day, sum(cost_delta) as total_cost_usd
+  from delta_days
+  group by user_name, day
+),
+-- Distinct (user, session, day) combos a session had any activity in, so a session
+-- spanning multiple days counts toward each day it was actually active — consistent
+-- with cost now being split the same way, rather than only counting on the day of its
+-- latest snapshot.
+session_days as (
+  select distinct user_name, session_id, (recorded_at at time zone 'Asia/Kolkata')::date as day
+  from public.usage_snapshots
+  where session_id is not null
+),
+session_counts as (
+  select user_name, day, count(*) as session_count
+  from session_days
+  group by user_name, day
 ),
 daily_peaks as (
   select
@@ -197,11 +202,11 @@ select
   dp.day,
   dp.peak_5h,
   dp.peak_7d,
-  coalesce(sum(ps.cost_usd), 0) as total_cost_usd,
-  count(ps.session_id) as session_count
+  coalesce(dc.total_cost_usd, 0) as total_cost_usd,
+  coalesce(sc.session_count, 0) as session_count
 from daily_peaks dp
-left join per_session ps on ps.user_name = dp.user_name and ps.day = dp.day
-group by dp.user_name, dp.day, dp.peak_5h, dp.peak_7d;
+left join day_costs dc on dc.user_name = dp.user_name and dc.day = dp.day
+left join session_counts sc on sc.user_name = dp.user_name and sc.day = dp.day;
 
 revoke all on public.latest_per_user from anon, authenticated;
 revoke all on public.daily_usage from anon, authenticated;

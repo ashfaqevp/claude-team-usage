@@ -48,19 +48,26 @@ API response comes back. All code handles this without crashing.
 
 ## The core calculation, as actually implemented
 
-**Cost is delta-based, not cumulative-snapshot-based.** For each `session_id`, we
-track the last known cost. Each new snapshot's contribution to "usage since we last
-checked" is:
+**Cost is delta-based, per snapshot — not one running total per session.** For each
+`session_id`, walking its snapshots in time order, every snapshot's contribution
+("delta") is:
 
 ```
-delta = max(0, new_cost - last_known_cost_for_this_session)
+delta = max(0, new_cost - previous_cost_for_this_session)
 ```
 
-The `max(0, ...)` clamp is the resume-bug protection (see below). The delta —
-not the running total — is what gets attributed to whichever time window it
-actually happened in. This avoids over-counting a long session that spans a
-5-hour reset boundary, which the original "take the latest total" design would
-have double-counted.
+(The session's first-ever snapshot counts in full, since there's no earlier reading
+to diff against.) The `max(0, ...)` clamp is the resume-bug protection (see below).
+
+Critically, **each delta is attributed to the window/day of the snapshot it actually
+happened at** — not to whichever bucket the session's *latest* snapshot lands in. A
+long session that spans a 5-hour reset boundary or a calendar day therefore gets its
+cost genuinely split between the two buckets: e.g. a session logging $5 the hour
+before a window closes and $4 the hour after only ever contributes $5 to the first
+window and $4 to the second — never $9 to either. Implemented as one delta-event per
+snapshot (`sessionCostDeltas()` in the extension, `session_cost_deltas()` in
+Supabase), filtered/grouped by each event's own timestamp — see edge case 2 below for
+the earlier, broken version of this.
 
 **Per-device slice of the shared 5-hour limit:**
 
@@ -78,23 +85,35 @@ doesn't expose a true per-person breakdown on a shared account.
 
 1. **Session resume cost reset (Claude Code bug, GitHub #13088).** Resuming an old
    session has been observed to reset its reported cost to a lower value instead of
-   continuing from its real prior value. Handled by the delta approach above: each
-   new snapshot's delta is `max(0, new_cost - last_known_cost)`, so a drop produces a
-   delta of zero (ignored, not subtracted) rather than corrupting the running total.
-   Deliberately *not* handled by clamping to the highest cost ever seen for the
-   session — that simpler approach would hide any real spend that accrues between the
-   reset and the point the total climbs back past its old peak. This does not fix the
-   upstream bug; it stops it from corrupting our numbers.
-2. **A session spanning a 5-hour reset boundary.** Fixed by the delta approach above
-   — only the actual increase gets attributed to a window, not the session's whole
-   running total. Residual imprecision: a single delta *interval* (the gap between
-   two consecutive status-line updates) can itself straddle the boundary. This is a
-   small, bounded error — at most one status-line interval's worth — not a
-   whole-session error.
-3. **Consistency between the extension and the dashboard.** The delta/clamp logic
-   must be implemented identically in the extension's local aggregation AND in
-   Supabase's `get_team_window_summary()` / `daily_usage`. If these ever drift apart,
-   the two views will disagree. Check both any time this logic changes.
+   continuing from its real prior value. Handled by the per-snapshot delta above: a
+   drop produces a delta of zero (ignored, not subtracted) rather than corrupting the
+   running total, and is logged as a one-line warning. Deliberately *not* handled by
+   clamping to the highest cost ever seen for the session — that simpler approach
+   would hide any real spend that accrues between the reset and the point the total
+   climbs back past its old peak (e.g. readings `[5, 8, 2, 4, 6, 9]` should total
+   **15**, every real increase including the 2→4→6 climb after the reset, not **9**,
+   the running max). This does not fix the upstream bug; it stops it from corrupting
+   our numbers.
+2. **A session spanning a 5-hour reset boundary or a calendar day.** Fixed — but this
+   took two attempts, worth recording so it isn't silently re-broken. The *first*
+   attempt kept one pre-summed delta-accumulated total per session and attributed the
+   whole thing to whichever window/day the session's *latest* snapshot fell in — this
+   still dumped 100% of a long session's cost into one bucket, identical to the
+   original "take the latest total" bug it was supposed to fix, just with corrected
+   numbers. Verified wrong with a concrete case: a session with $5 spent before a
+   window opened and $4 spent inside it reported $9 for that window, not $4. The
+   *actual* fix (`sessionCostDeltas()` / `session_cost_deltas()`) returns one row per
+   snapshot instead of one per session, so each delta is filtered/grouped by its own
+   timestamp — the $5 attributes to the earlier window, the $4 to the current one.
+   Residual imprecision: a single delta *interval* (the gap between two consecutive
+   status-line updates) can itself straddle a boundary. This is a small, bounded
+   error — at most one status-line interval's worth — not a whole-session error.
+3. **Consistency between the extension and the dashboard.** The delta logic must be
+   implemented identically in the extension (`sessionCostDeltas()` in `usage.ts`) and
+   in Supabase (`session_cost_deltas()`, read by both `get_team_window_summary()` and
+   `daily_usage`). If these ever drift apart, the two views will disagree. Check both
+   any time this logic changes — verify with the same test cases on both sides
+   (a resume-dip, and a session/day-spanning case), not just one.
 4. **Model switching within one session.** No calculation issue — `cost.total_cost_usd`
    is already priced per-call by Claude Code's own internal price table, so a
    session mixing Sonnet and Opus already has a correctly-priced total in USD. We
@@ -110,6 +129,6 @@ doesn't expose a true per-person breakdown on a shared account.
    clock is roughly correct. Not actively checked; a machine with a significantly
    wrong clock could have its snapshots attributed to the wrong window.
 7. **Multiple parallel sessions per person** (e.g. two terminal tabs at once). Each
-   gets its own `session_id` and is delta'd independently, then summed per user —
-   this is expected to work correctly, but hasn't been explicitly tested with two
-   simultaneous sessions. Worth a real test if this is common on your team.
+   gets its own `session_id` and is delta'd independently, then summed per user.
+   Verified with a concrete test: two interleaved sessions with raw readings
+   `[2, 3]` and `[1, 4]` in the same window correctly summed to $7 across 2 sessions.

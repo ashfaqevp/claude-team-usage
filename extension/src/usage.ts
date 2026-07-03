@@ -70,53 +70,76 @@ function tsMillis(s: Snapshot): number {
 // https://github.com/anthropics/claude-code/issues/13088
 const COST_RESET_BUG_URL = 'https://github.com/anthropics/claude-code/issues/13088';
 
+export interface SessionCostEvent {
+  tsMillis: number;
+  sessionKey: string;
+  costDelta: number;
+  inputTokenDelta: number;
+  outputTokenDelta: number;
+}
+
+interface FieldTracker {
+  prevCost: number | null;
+  prevInputTokens: number | null;
+  prevOutputTokens: number | null;
+}
+
+/** `current - prev` clamped to >= 0; the first reading for a session (prev == null) counts in full. */
+function clampedDelta(current: number, prev: number | null, sessionKey: string, field: string): number {
+  if (prev == null) return current;
+  const delta = current - prev;
+  if (delta < 0) {
+    console.warn(
+      `[claude-team-usage] session ${sessionKey}: ${field} dropped from ${prev} to ${current} ` +
+        `(known Claude Code resumed-session bug, ${COST_RESET_BUG_URL}) — ignoring the decrease`
+    );
+    return 0;
+  }
+  return delta;
+}
+
 /**
- * One entry per session_id, keeping the latest snapshot by timestamp, but with
- * `cost_usd` replaced by a delta-accumulated total: for each snapshot in time order we
- * add only the increase over the session's previous snapshot, clamping negative deltas
- * to zero instead of subtracting. This still captures real spend that accrues after a
- * resumed session's cost.total_cost_usd resets to a lower value (see
- * COST_RESET_BUG_URL) — unlike simply clamping to the highest value seen so far, which
- * would hide any spend between the reset and the point the total climbs back past its
- * old peak. A one-line warning is logged whenever a drop is detected and ignored.
+ * Splits each session's cumulative readings into per-snapshot contributions ("deltas")
+ * attributed to the moment they actually happened — not lumped onto whichever
+ * window/day the session's latest snapshot happens to fall in. For each session, in
+ * time order, a snapshot contributes `max(0, value - previous value)` for cost and
+ * tokens (the first snapshot contributes its raw value, since there's no earlier
+ * reading to diff against). This lets a long-running session that spans a 5-hour
+ * window or a calendar day be split correctly between them, instead of attributing its
+ * entire lifetime total to a single bucket. It also absorbs Claude Code's known
+ * resumed-session reset bug (COST_RESET_BUG_URL): a drop produces a zero-contribution
+ * event (logged) rather than corrupting the running total.
  */
-export function latestPerSession(snapshots: Snapshot[]): Snapshot[] {
+export function sessionCostDeltas(snapshots: Snapshot[]): SessionCostEvent[] {
   const sorted = [...snapshots].sort((a, b) => tsMillis(a) - tsMillis(b));
-  const bySession = new Map<string, Snapshot>();
-  const accumulatedCostBySession = new Map<string, number>();
-  const lastRawCostBySession = new Map<string, number>();
+  const trackers = new Map<string, FieldTracker>();
+  const events: SessionCostEvent[] = [];
   let fallbackIndex = 0;
 
   for (const s of sorted) {
     const key = s.session_id != null ? s.session_id : `__no-session-${fallbackIndex++}`;
-    let snapshot = s;
+    const tracker = trackers.get(key) ?? { prevCost: null, prevInputTokens: null, prevOutputTokens: null };
 
-    if (typeof s.cost_usd === 'number') {
-      const prevRaw = lastRawCostBySession.get(key);
-      let accumulated: number;
+    const costDelta =
+      typeof s.cost_usd === 'number' ? clampedDelta(s.cost_usd, tracker.prevCost, key, 'cost_usd') : 0;
+    const inputTokenDelta =
+      typeof s.total_input_tokens === 'number'
+        ? clampedDelta(s.total_input_tokens, tracker.prevInputTokens, key, 'total_input_tokens')
+        : 0;
+    const outputTokenDelta =
+      typeof s.total_output_tokens === 'number'
+        ? clampedDelta(s.total_output_tokens, tracker.prevOutputTokens, key, 'total_output_tokens')
+        : 0;
 
-      if (prevRaw == null) {
-        accumulated = s.cost_usd;
-      } else {
-        const delta = s.cost_usd - prevRaw;
-        if (delta < 0) {
-          console.warn(
-            `[claude-team-usage] session ${key}: cost_usd dropped from ${prevRaw} to ${s.cost_usd} ` +
-              `(known Claude Code resumed-session bug, ${COST_RESET_BUG_URL}) — ignoring the decrease`
-          );
-        }
-        accumulated = (accumulatedCostBySession.get(key) ?? 0) + Math.max(0, delta);
-      }
+    if (typeof s.cost_usd === 'number') tracker.prevCost = s.cost_usd;
+    if (typeof s.total_input_tokens === 'number') tracker.prevInputTokens = s.total_input_tokens;
+    if (typeof s.total_output_tokens === 'number') tracker.prevOutputTokens = s.total_output_tokens;
+    trackers.set(key, tracker);
 
-      accumulatedCostBySession.set(key, accumulated);
-      lastRawCostBySession.set(key, s.cost_usd);
-      snapshot = { ...s, cost_usd: accumulated };
-    }
-
-    bySession.set(key, snapshot);
+    events.push({ tsMillis: tsMillis(s), sessionKey: key, costDelta, inputTokenDelta, outputTokenDelta });
   }
 
-  return Array.from(bySession.values());
+  return events;
 }
 
 /** Most recent snapshot that actually carries rate_limits data, or null if none seen. */
@@ -141,22 +164,23 @@ export function getCurrentWindow(snapshots: Snapshot[]): { start: number; end: n
 export function summarizeCurrentWindow(snapshots: Snapshot[]): WindowSummary {
   const latestRateLimits = latestWithRateLimits(snapshots);
   const window = getCurrentWindow(snapshots);
-  const perSession = latestPerSession(snapshots);
+  const events = sessionCostDeltas(snapshots);
 
   let windowCostUsd = 0;
   let windowInputTokens = 0;
   let windowOutputTokens = 0;
-  let sessionCount = 0;
+  const sessionsInWindow = new Set<string>();
 
-  for (const s of perSession) {
-    const t = tsMillis(s);
-    const inWindow = window ? t >= window.start && t <= window.end : true;
+  for (const e of events) {
+    const inWindow = window ? e.tsMillis >= window.start && e.tsMillis <= window.end : true;
     if (!inWindow) continue;
-    sessionCount += 1;
-    if (typeof s.cost_usd === 'number') windowCostUsd += s.cost_usd;
-    if (typeof s.total_input_tokens === 'number') windowInputTokens += s.total_input_tokens;
-    if (typeof s.total_output_tokens === 'number') windowOutputTokens += s.total_output_tokens;
+    sessionsInWindow.add(e.sessionKey);
+    windowCostUsd += e.costDelta;
+    windowInputTokens += e.inputTokenDelta;
+    windowOutputTokens += e.outputTokenDelta;
   }
+
+  const sessionCount = sessionsInWindow.size;
 
   return {
     accountFiveHourPct: latestRateLimits ? latestRateLimits.five_hour_pct : null,
@@ -177,7 +201,7 @@ function localDateKey(ms: number): string {
   return new Date(ms).toLocaleDateString('en-CA');
 }
 
-/** Per-day peak account percentages and per-day cost (latest-per-session cost, attributed by day). */
+/** Per-day peak account percentages and per-day cost (delta-attributed by the day each increase happened). */
 export function dailyPeaks(snapshots: Snapshot[], maxDays = 14): DailyPeak[] {
   const peaks = new Map<string, { fiveHour: number | null; sevenDay: number | null }>();
   for (const s of snapshots) {
@@ -192,12 +216,12 @@ export function dailyPeaks(snapshots: Snapshot[], maxDays = 14): DailyPeak[] {
     peaks.set(key, entry);
   }
 
-  const costByDay = new Map<string, { cost: number; sessions: number }>();
-  for (const s of latestPerSession(snapshots)) {
-    const key = localDateKey(tsMillis(s));
-    const entry = costByDay.get(key) || { cost: 0, sessions: 0 };
-    entry.cost += typeof s.cost_usd === 'number' ? s.cost_usd : 0;
-    entry.sessions += 1;
+  const costByDay = new Map<string, { cost: number; sessions: Set<string> }>();
+  for (const e of sessionCostDeltas(snapshots)) {
+    const key = localDateKey(e.tsMillis);
+    const entry = costByDay.get(key) || { cost: 0, sessions: new Set<string>() };
+    entry.cost += e.costDelta;
+    entry.sessions.add(e.sessionKey);
     costByDay.set(key, entry);
   }
 
@@ -207,7 +231,7 @@ export function dailyPeaks(snapshots: Snapshot[], maxDays = 14): DailyPeak[] {
     peakFiveHourPct: peaks.get(date)?.fiveHour ?? null,
     peakSevenDayPct: peaks.get(date)?.sevenDay ?? null,
     costUsd: costByDay.get(date)?.cost ?? 0,
-    sessionCount: costByDay.get(date)?.sessions ?? 0,
+    sessionCount: costByDay.get(date)?.sessions.size ?? 0,
   }));
 
   rows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
