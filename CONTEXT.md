@@ -43,7 +43,16 @@ Only aggregate numbers are ever meant to leave a machine: cost, tokens,
 percentages, timestamps, model, session_id, machine, user name. Never prompts,
 code, or file contents.
 
-## Status quo (Phase 1 complete)
+## Layout
+
+- The status-line hook (`usage-logger.js`) logs locally only — no network calls.
+- The VS Code extension owns wiring the hook into `~/.claude/settings.json`, reads
+  the local log, and shows the developer their own usage. Later (Phase 3+) it also
+  syncs aggregates to Supabase.
+- The admin dashboard (a later phase) reads from Supabase, not from any single
+  machine's local log.
+
+## Status quo (Phase 2 complete)
 
 - `media/usage-logger.js` — the status-line hook script. Reads stdin JSON, prints a
   null-safe one-line status bar (model, context %, 5h %, 7d %), and appends a
@@ -53,5 +62,15 @@ code, or file contents.
   failures never blank the status bar.
 - `sample-status.json` — sample payload matching Claude Code's real status-line
   schema, for offline testing: `cat sample-status.json | node media/usage-logger.js`.
+- VS Code extension (`src/extension.ts`, `src/usage.ts`) — on activation, copies
+  `media/usage-logger.js` into `~/.claude/team-usage/` and points
+  `~/.claude/settings.json`'s `statusLine` at the copied file (asking first, and
+  backing up to `settings.json.bak`, if a different `statusLine` is already
+  configured). Shows a status bar item (account 5h % + the developer's own cost this
+  window, refreshed every 30s from the local log only) and a
+  "Claude Usage: Show my usage" command that opens a webview with 5h/7d progress
+  bars, the developer's cost/tokens this window, and a table of daily peaks — all
+  computed from the local log.
 
-Not yet built: the VS Code extension shell, Supabase sync, and the admin dashboard.
+Not yet built: Supabase sync and the admin dashboard (Phase 3+). The extension does
+not talk to the network in this phase.

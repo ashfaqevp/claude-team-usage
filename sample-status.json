@@ -8,4 +8,4 @@
   "cost": { "total_cost_usd": 0.4821, "total_duration_ms": 452000, "total_api_duration_ms": 38000, "total_lines_added": 156, "total_lines_removed": 23 },
   "context_window": { "total_input_tokens": 15234, "total_output_tokens": 4521, "context_window_size": 200000, "used_percentage": 42.5, "remaining_percentage": 57.5 },
   "rate_limits": { "five_hour": { "used_percentage": 30, "resets_at": 1751520000 }, "seven_day": { "used_percentage": 14, "resets_at": 1751800000 } }
-}
+}/

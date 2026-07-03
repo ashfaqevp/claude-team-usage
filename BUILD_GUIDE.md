@@ -4,7 +4,7 @@ A step-by-step guide to building the usage tracker **with Claude Code**, one pha
 at a time. Each phase is a prompt you paste into Claude Code inside the repo, plus
 how to test it before moving on.
 
-Step 1 (the status-line logger + offline pipe test) is already done. Start at Phase 2.
+Start at Phase 1 — nothing before this guide counts as done yet.
 
 ---
 
@@ -45,7 +45,6 @@ device_slice = (device_window_cost / total_window_cost) * account_five_hour_pct
 ```
 
 Rules that matter:
-
 - `cost.total_cost_usd` is **cumulative within a session**, so aggregate by
   `session_id` and take the **latest snapshot per session**. Never sum raw rows.
 - The current 5-hour window ends at the latest `five_hour_resets_at` seen; window
@@ -78,6 +77,94 @@ status-line script on stdin.
 Note: `rate_limits` is null until Claude Code makes its first API call in a session,
 and the field only exists in Claude Code v1.2.80+. Check `claude --version` on all
 three Macs. Always code with null-safe fallbacks.
+
+---
+
+# Phase 1 — Repo + the logger script, tested offline
+
+**Goal:** a real git repo, with the status-line logger script inside it, proven to
+work using the sample payload — before it ever touches your real Claude Code install.
+
+### Do this part yourself (not a Claude Code prompt)
+
+```bash
+mkdir claude-team-usage && cd claude-team-usage
+git init
+gh repo create claude-team-usage --public --source=. --remote=origin   # or --private
+code .   # open in VS Code, start a Claude Code session in this folder
+```
+
+### PROMPT (paste into Claude Code, inside the new repo)
+
+```
+We're building a VS Code extension called "claude-team-usage" that tracks how much
+of a SHARED Claude Max plan each developer uses (3 developers, 1 account, 3 Macs).
+This is Phase 1 of a multi-phase build — do only Phase 1.
+
+1. Create media/usage-logger.js — a Node script that will later run as Claude Code's
+   status-line hook. It must:
+   - Read JSON from stdin (Claude Code pipes session data to it on every render).
+   - Print a plain one-line status bar to stdout: model display name, context %,
+     rate_limits.five_hour.used_percentage, rate_limits.seven_day.used_percentage.
+     All fields may be missing/null (a fresh session has no rate_limits yet) — never
+     throw, fall back to "--".
+   - Append a JSON snapshot to ~/.claude/team-usage/local-log.jsonl whenever the
+     five_hour_pct, seven_day_pct, or cost.total_cost_usd differs from the last
+     snapshot (track the last one in ~/.claude/team-usage/last.json so we don't write
+     a row on every render). Snapshot fields: ts (ISO string), session_id, cost_usd,
+     five_hour_pct, five_hour_resets_at, seven_day_pct, seven_day_resets_at, model,
+     total_input_tokens, total_output_tokens.
+   - Wrap everything in try/catch — logging must never blank the status bar.
+
+2. Create sample-status.json in the repo root with realistic sample data matching
+   Claude Code's real status-line schema (session_id, cwd, model.id/display_name,
+   workspace, version, cost.total_cost_usd, context_window.*, rate_limits.five_hour.*,
+   rate_limits.seven_day.*).
+
+3. Create CONTEXT.md capturing these decisions for future sessions:
+   - Goal: per-device usage tracking on one shared Claude Max account, 3 Macs.
+   - Data source: Claude Code's status-line JSON on stdin only. Never parse
+     ~/.claude/projects/*.jsonl — its token counts are known-buggy placeholders.
+   - Two numbers: rate_limits.* is account-wide (identical on every machine); 
+     cost.total_cost_usd is per-device, per-session, and CUMULATIVE within a session.
+   - Per-device slice formula: (device_window_cost / total_window_cost) * account_5h_pct.
+   - Aggregation rule: group by session_id, take the LATEST snapshot per session —
+     never sum raw rows, since cost accumulates within a session.
+   - Privacy: only aggregate numbers leave a machine (cost, tokens, percentages,
+     timestamps, model, session_id, machine, user name). Never prompts, code, or
+     file contents.
+```
+
+### TEST — do this before touching your real Claude Code install
+
+```bash
+cat sample-status.json | node media/usage-logger.js
+cat ~/.claude/team-usage/local-log.jsonl
+```
+You should see a printed status line, and one JSON row in the log file. Edit a
+percentage in `sample-status.json`, run the pipe again, confirm a **second** row
+appends (proving the "only log on change" logic works) — then run it a third time
+unchanged and confirm it does **not** append a duplicate row.
+
+### Only once that passes — wire it into your real Claude Code
+
+```bash
+mkdir -p ~/.claude/team-usage
+cp media/usage-logger.js ~/.claude/team-usage/usage-logger.js
+```
+Add to `~/.claude/settings.json` (merge if the file already has content):
+```json
+{ "statusLine": { "type": "command", "command": "node ~/.claude/team-usage/usage-logger.js" } }
+```
+Restart Claude Code, send it one real message, then check:
+```bash
+cat ~/.claude/team-usage/local-log.jsonl
+```
+A row with real data should appear. This confirms the logger works against your
+actual Claude Code, not just the sample file.
+
+### CHECKPOINT
+`git add -A && git commit -m "Phase 1: logger script, tested offline and live" && git tag v0.0-logger`
 
 ---
 
@@ -159,7 +246,6 @@ Supabase code in this phase. Keep everything in memory / local files.
 - Open `~/.claude/settings.json` → confirm the `statusLine` now points at the logger.
 
 ### CHECKPOINT
-
 `git add -A && git commit -m "Phase 2: local-only extension + logger" && git tag v0.1-local`
 
 ---
@@ -168,6 +254,11 @@ Supabase code in this phase. Keep everything in memory / local files.
 
 **Goal:** snapshots flow to Supabase; juniors can insert but not read raw rows; a
 read-only RPC lets a junior see their own slice and the team total.
+
+**Key naming note:** Supabase now calls these keys "publishable" and "secret" (older
+projects/docs may still say "anon" and "service_role") — same two roles, same
+behavior. Wherever this guide says "anon key," use your **publishable key**.
+Wherever it says "service role key," use your **secret key**.
 
 ### PROMPT (paste into Claude Code)
 
@@ -196,16 +287,28 @@ Read CONTEXT.md. This is Phase 3: add Supabase. Keep everything from Phase 2 wor
      service_role only (the dashboard uses the service key).
 
 2. In the extension, add config settings: claudeUsage.supabaseUrl,
-   claudeUsage.supabaseAnonKey, claudeUsage.userName (default os.userInfo().username).
+   claudeUsage.supabaseAnonKey, claudeUsage.userNameOverride (optional, empty by default).
+   Add src/identity.ts that resolves the user's identity with this priority, no login
+   involved:
+   a. If userNameOverride is set in config, use it.
+   b. Else run `git config --global user.email` and `git config --global user.name`
+      (execSync, wrapped in try/catch). If email exists, use "name <email>" (or just
+      email if name is empty) as user_name.
+   c. Else fall back to a generated device id: check for
+      ~/.claude/team-usage/device-id.txt; if missing, create it with a random UUID
+      and use "device-<first 8 chars>" as user_name.
+   This is identity for labeling only, not authentication — note that in a code
+   comment. Cache the resolved identity in memory for the session (don't re-run git
+   config every 30s).
 
 3. Add a sync step to the 30s timer: read local-log.jsonl, POST rows not yet synced
-   (track a cursor in globalState) to <url>/rest/v1/usage_snapshots with the anon key
+   (track a cursor in globalState) to <url>/rest/v1/usage_snapshots with the publishable key (aka anon key)
    (headers: apikey, Authorization Bearer, Prefer: return=minimal). Map local fields
    to table columns; convert epoch resets_at to ISO. Advance the cursor only on HTTP
    success. If url/key are unset, skip sync silently — local features still work.
 
 4. Update the status bar and panel to call get_team_window_summary() via
-   <url>/rest/v1/rpc/get_team_window_summary (anon key). Compute the current user's
+   <url>/rest/v1/rpc/get_team_window_summary (publishable key). Compute the current user's
    slice = (my window_cost / sum of all window_cost) * account_five_hour_pct and show
    "you ≈ <slice>% of the shared 5h limit (team at <account_pct>%)". Fall back to the
    local-only display if the RPC is unreachable.
@@ -222,11 +325,10 @@ columns listed.
 - Set the three config values in the Extension Development Host settings. Use Claude
   Code for real once → confirm a new row lands in `usage_snapshots` and the status bar
   now shows "you ≈ X% ... team at Y%".
-- Confirm the anon key **cannot** read raw rows: try `select * from usage_snapshots`
-  with the anon key (via the REST URL) → should return nothing / be blocked by RLS.
+- Confirm the publishable key **cannot** read raw rows: try `select * from usage_snapshots`
+  with the publishable key (aka anon key) (via the REST URL) → should return nothing / be blocked by RLS.
 
 ### CHECKPOINT
-
 `git commit -am "Phase 3: Supabase schema, insert-only anon, RPC, sync" && git tag v0.2-sync`
 
 ---
@@ -242,7 +344,7 @@ a daily log.
 Read CONTEXT.md. Phase 4: build dashboard/index.html (single self-contained file,
 plain fetch, no build step).
 
-- On load, prompt once for Supabase URL and the SERVICE ROLE key; store in
+- On load, prompt once for Supabase URL and the SECRET key (aka service role key); store in
   localStorage. Show a clear warning that the service key stays on the admin's
   machine and is never shared with juniors or committed.
 - Fetch latest_per_user and daily_usage via /rest/v1 with the service key, and also
@@ -265,7 +367,6 @@ since on Max it's not real spend.
 - Confirm the slices across users roughly sum to the shared account % shown in the header.
 
 ### CHECKPOINT
-
 `git commit -am "Phase 4: admin dashboard" && git tag v0.3-dashboard`
 
 ---
@@ -294,7 +395,6 @@ Read CONTEXT.md. Phase 5: prepare for distribution.
 - You: open `dashboard/index.html`, enter your service key once.
 
 ### CHECKPOINT
-
 `git commit -am "Phase 5: packaging + README" && git tag v1.0`
 
 ---
@@ -313,6 +413,4 @@ Read CONTEXT.md. Phase 5: prepare for distribution.
   README so no one expects a surface with no status line to be counted.
 - **The split is an estimate.** Cost-share × account% is a good approximation, not an
   official per-device figure; the shared total is exact. Say so in the dashboard.
-
-```
 ```
