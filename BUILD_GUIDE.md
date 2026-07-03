@@ -362,39 +362,79 @@ Either way, finish with the real end-to-end test:
 
 # Phase 4 — Admin dashboard
 
-**Goal:** one page showing every junior's slice of the shared limit + who used most +
-a daily log.
+**Goal:** every junior's slice of the shared limit + who used most + a daily log —
+built as a Nuxt 4 app in `dashboard/`, in the same repo as the extension.
 
-### PROMPT (paste into Claude Code)
+**Why Nuxt over a static HTML file:** the secret/service-role key can live as a
+**server-only** environment variable in Nuxt's Nitro layer, and never reach the
+browser. The page calls your own server route; that route is the only thing that
+talks to Supabase with the secret key. This also sets up cleanly for the
+GitHub-login/rooms upgrade later, since Nitro server routes are where that OAuth flow
+would live too.
+
+### Setup (do this yourself first)
+
+```bash
+cd claude-team-usage
+pnpm dlx nuxi@latest init dashboard
+cd dashboard
+```
+Create `dashboard/.env` (never commit this — add `dashboard/.env` to `.gitignore`):
+```
+SUPABASE_URL=https://htrxdxtbrkdabrrqbpyr.supabase.co
+SUPABASE_SECRET_KEY=<your secret/service_role key>
+```
+
+### PROMPT (paste into Claude Code, inside the dashboard/ folder or pointing at it)
 
 ```
-Read CONTEXT.md. Phase 4: build dashboard/index.html (single self-contained file,
-plain fetch, no build step).
+Read ../CONTEXT.md. Phase 4: build the admin dashboard as a Nuxt 4 app in dashboard/,
+in this same repo, alongside the extension/ folder.
 
-- On load, prompt once for Supabase URL and the SECRET key (aka service role key); store in
-  localStorage. Show a clear warning that the service key stays on the admin's
-  machine and is never shared with juniors or committed.
-- Fetch latest_per_user and daily_usage via /rest/v1 with the service key, and also
-  call get_team_window_summary for the current-window slices.
-- Render: a header with the shared 5h% and 7d% + reset countdowns; a card per user
-  showing their estimated slice of the 5h limit (share * account_5h_pct), their
-  window cost, tokens, model, and last-seen; and a "daily peaks" table below.
-- Sort cards by slice descending so the heaviest user is first. Colour the slice bar
-  cool→amber→red by level. Dim users idle >30 min.
-- Auto-refresh every 30s.
+1. In nuxt.config.ts, add runtimeConfig with a server-only supabaseUrl and
+   supabaseSecretKey, sourced from the .env (SUPABASE_URL, SUPABASE_SECRET_KEY).
+   These must NOT be in the `public` runtimeConfig — server-only, never sent to the
+   browser.
 
-Make the numbers legible (monospace), and clearly label cost as "API-equivalent"
-since on Max it's not real spend.
+2. Create server/api/team-summary.get.ts — a Nitro server route that uses the secret
+   key to call our Supabase project's REST/RPC endpoints server-side: fetch
+   get_team_window_summary(), latest_per_user, and daily_usage. Return their combined
+   result as JSON. This is the ONLY place the secret key is used.
+
+3. Create pages/index.vue — fetches /api/team-summary (useFetch, client never touches
+   Supabase directly). Render:
+   - A header: shared 5h% and 7d% with reset countdowns.
+   - A card per user: their estimated slice of the 5h limit (their window_cost /
+     total window_cost * account_5h_pct), window cost, tokens, model, last-seen.
+     Sort by slice descending. Colour cool→amber→red by level. Dim users idle >30 min.
+   - A "daily peaks" table below from the daily_usage data.
+   - Auto-refresh every 30s (useFetch refresh or setInterval + refresh()).
+
+4. Label cost clearly as "API-equivalent" (not real spend, since this is a Max plan).
+   Use plain, readable typography — this is an internal ops dashboard, not a marketing
+   page, so prioritize legibility over flourish.
+
+Keep this in the same repo as extension/ but as its own Nuxt app with its own
+package.json — no shared build tooling needed between the two.
 ```
 
 ### TEST
 
-- Open `dashboard/index.html`, enter URL + service key. It should show the row you
-  inserted in Phase 3 and any real synced rows, with a per-user slice.
-- Confirm the slices across users roughly sum to the shared account % shown in the header.
+- `pnpm install && pnpm dev` inside `dashboard/`, open the local URL.
+- Confirm the page loads real data from your Supabase project (the row from earlier
+  testing, plus anything synced since).
+- **Confirm the secret key never reaches the browser**: open DevTools → Network tab,
+  reload the page, inspect the `/api/team-summary` response and the page source —
+  the key should appear nowhere in anything sent to the browser.
+- Confirm slices across users roughly sum to the shared account % shown in the header.
 
 ### CHECKPOINT
-`git commit -am "Phase 4: admin dashboard" && git tag v0.3-dashboard`
+`git commit -am "Phase 4: admin dashboard (Nuxt 4, server-side secret key)" && git tag v0.3-dashboard`
+
+### Deploying it later
+Since you already use Vercel, `dashboard/` deploys there directly — set
+`SUPABASE_URL`/`SUPABASE_SECRET_KEY` as Vercel environment variables (never in the
+repo). Not required now; local `pnpm dev` is enough while you're the only viewer.
 
 ---
 
@@ -411,12 +451,12 @@ Read CONTEXT.md. Phase 5: prepare for distribution.
   juniors only need to set their userName (or auto-derive it). Never put the service
   key anywhere in the extension.
 - Add an .vscodeignore so the packaged .vsix stays small but includes media/.
-- Add the vsce package script and confirm `npx @vscode/vsce package` produces a .vsix.
+- Add the vsce package script and confirm `pnpm dlx @vscode/vsce package` produces a .vsix.
 ```
 
 ### Then, outside Claude Code
 
-- `npx @vscode/vsce package` → `claude-team-usage-x.y.z.vsix`.
+- `pnpm dlx @vscode/vsce package` → `claude-team-usage-x.y.z.vsix`.
 - Create a GitHub Release, attach the `.vsix`.
 - Each junior: Extensions panel → `…` → **Install from VSIX** → set their `userName`.
 - You: open `dashboard/index.html`, enter your service key once.
