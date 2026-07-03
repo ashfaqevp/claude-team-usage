@@ -45,12 +45,17 @@ code, or file contents.
 
 ## Layout
 
-- The status-line hook (`usage-logger.js`) logs locally only — no network calls.
-- The VS Code extension owns wiring the hook into `~/.claude/settings.json`, reads
-  the local log, and shows the developer their own usage. Later (Phase 3+) it also
-  syncs aggregates to Supabase.
-- The admin dashboard (a later phase) reads from Supabase, not from any single
-  machine's local log.
+Repo root: `extension/` (the VS Code extension), `dashboard/` (the Nuxt admin
+dashboard), `supabase/` (shared schema, sibling to both), `CONTEXT.md`,
+`BUILD_GUIDE.md`.
+
+- The status-line hook (`extension/media/usage-logger.js`) logs locally only — no
+  network calls.
+- The VS Code extension (`extension/`) owns wiring the hook into
+  `~/.claude/settings.json`, reads the local log, and shows the developer their own
+  usage. Later (Phase 3+) it also syncs aggregates to Supabase.
+- The admin dashboard (`dashboard/`, a later phase) reads from Supabase, not from
+  any single machine's local log.
 
 ## Status quo (Phase 2 complete)
 

@@ -1,4 +1,7 @@
-node_modules/
-out/
+extension/node_modules/
+extension/out/
 *.vsix
+dashboard/node_modules/
+dashboard/.nuxt
+dashboard/.output
 dashboard/.env
