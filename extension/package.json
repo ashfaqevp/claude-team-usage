@@ -43,7 +43,8 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "tsc -p ./ && node scripts/verify-edge-cases.js"
+    "test": "tsc -p ./ && node scripts/verify-edge-cases.js",
+    "package": "pnpm dlx @vscode/vsce package"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
