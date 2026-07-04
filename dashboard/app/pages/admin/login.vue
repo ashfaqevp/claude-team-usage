@@ -1,0 +1,69 @@
+<script setup lang="ts">
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Button } from '@/components/ui/button'
+import { CircleAlert, ShieldCheck } from '@lucide/vue'
+
+const supabase = useSupabaseClient()
+const router = useRouter()
+
+const email = ref('')
+const password = ref('')
+const submitting = ref(false)
+const errorMessage = ref('')
+
+async function handleSubmit() {
+  submitting.value = true
+  errorMessage.value = ''
+
+  const { error } = await supabase.auth.signInWithPassword({
+    email: email.value.trim(),
+    password: password.value,
+  })
+
+  submitting.value = false
+
+  if (error) {
+    errorMessage.value = 'Invalid email or password.'
+    return
+  }
+
+  await router.push('/admin')
+}
+</script>
+
+<template>
+  <div class="flex min-h-screen items-center justify-center bg-muted/30 px-4">
+    <Card class="w-full max-w-sm">
+      <CardHeader>
+        <div class="flex items-center gap-2 text-muted-foreground">
+          <ShieldCheck class="size-4" />
+          <span class="text-xs font-medium uppercase tracking-wide">Operator sign-in</span>
+        </div>
+        <CardTitle class="text-lg">Claude Room — Admin</CardTitle>
+        <CardDescription>Sign in with your admin email and password.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form class="space-y-4" @submit.prevent="handleSubmit">
+          <div class="space-y-1.5">
+            <label for="admin-email" class="text-sm font-medium">Email</label>
+            <Input id="admin-email" v-model="email" type="email" autocomplete="username" required />
+          </div>
+          <div class="space-y-1.5">
+            <label for="admin-password" class="text-sm font-medium">Password</label>
+            <Input id="admin-password" v-model="password" type="password" autocomplete="current-password" required />
+          </div>
+
+          <div v-if="errorMessage" class="flex items-center gap-1.5 text-sm text-destructive">
+            <CircleAlert class="size-3.5" />
+            {{ errorMessage }}
+          </div>
+
+          <Button type="submit" class="w-full" :disabled="submitting">
+            {{ submitting ? 'Signing in…' : 'Sign in' }}
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
+  </div>
+</template>

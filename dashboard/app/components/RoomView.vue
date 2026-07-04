@@ -9,7 +9,9 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Pencil, Inbox, Flame, Users, TrendingUp, CalendarClock } from '@lucide/vue'
 
-const props = defineProps<{ data: MyRoomResponse }>()
+const props = withDefaults(defineProps<{ data: MyRoomResponse, allowRename?: boolean }>(), {
+  allowRename: true,
+})
 const emit = defineEmits<{ rename: [name: string] }>()
 
 // Ticks once a second so countdowns / last-seen / active-idle state stay live without refetching.
@@ -184,7 +186,7 @@ function submitRename() {
 <template>
   <div class="space-y-8">
     <div
-      v-if="hasHistory && !data.roomName"
+      v-if="allowRename && hasHistory && !data.roomName"
       class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-primary/30 bg-primary/5 px-4 py-3"
     >
       <p class="text-sm">
@@ -198,7 +200,7 @@ function submitRename() {
         <div>
           <div class="flex items-center gap-1.5">
             <CardTitle class="text-xl">{{ data.roomName || data.claudeEmail }}</CardTitle>
-            <Button variant="ghost" size="icon-sm" aria-label="Rename Room" @click="openRename">
+            <Button v-if="allowRename" variant="ghost" size="icon-sm" aria-label="Rename Room" @click="openRename">
               <Pencil class="size-3.5" />
             </Button>
           </div>
