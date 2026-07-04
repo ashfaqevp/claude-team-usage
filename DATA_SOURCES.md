@@ -185,6 +185,39 @@ doesn't expose a true per-person breakdown on a shared account.
     2026-07-04 by running `5 → [malformed ts] → 8 → 9` directly: `DELTA_TOTAL = 9`,
     `RESUME_BUG_WARNING_FIRED = false` (only the distinct "malformed timestamp"
     warning fired, captured and checked by string content, not just eyeballed).
+    **SQL-side audit (verified 2026-07-04, live against `htrxdxtbrkdabrrqbpyr`):**
+    `recorded_at` is `timestamptz not null`, and Postgres's own type check makes the
+    unparseable-string failure mode structurally impossible on the SQL side — `select
+    'not-a-real-date'::timestamptz` raises `22007: invalid input syntax for type
+    timestamp with time zone` and the row is refused at `INSERT`, full stop. There is
+    no equivalent of `tsMillis()`'s silent epoch-0 fallback anywhere in
+    `session_cost_deltas()` / `get_team_window_summary()` / `daily_usage`, since none
+    of them ever synthesize or coalesce a `recorded_at` — they only read what's
+    already stored. A distinct, real limitation remains, and it is *shared* rather
+    than SQL-specific: a **valid-but-wrong** timestamp (e.g. an accidentally-epoch
+    `recorded_at`) is not rejected — `select
+    '1970-01-01T00:00:00Z'::timestamptz` succeeds — and if such a row existed it
+    would scramble `lag()` ordering the same way the original bug did. Verified: a
+    fabricated `5 → 8 → 9` sequence (true chronological deltas `5, 3, 1`, true total
+    `$9`) with the middle reading's timestamp set to `1970-01-01T00:00:00Z` instead
+    of its true time reproduced the identical corruption shape as the JS example
+    above: sorted by `(recorded_at, id)` the epoch row comes first, so the reported
+    deltas came out `8` (no prior reading), `0` (a false drop from 8→5, the same
+    misleading resume-bug signature), `4` (from 5→9) — summing to `$12`, not the
+    true `$9`, and with a bogus resume-bug warning fired for a row that never
+    actually dropped. This is **not a gap the SQL layer introduces**:
+    `Date.parse('1970-01-01T00:00:00Z')` is equally valid in JS, so
+    `mapToRow()`/`readLocalLog()` would accept the exact same value — no
+    `timestamptz`-typed column, in Postgres or anywhere else, can distinguish an
+    honest old date from a bug that happened to produce one. Treated as an
+    **accepted structural boundary, not an open bug** — parseability is the only
+    thing a type system can enforce; plausibility is a judgment call belonging to
+    the application. Possible future hardening (not implemented): a plausibility
+    check rejecting `recorded_at` values more than ~1 day outside the expected range
+    (e.g. before the extension's install date, or in the future) at `mapToRow()`/
+    insert time. This would not close the theoretical gap (a "plausible" wrong date
+    would still pass) but would catch the realistic case of an actual epoch/zero-
+    value bug.
 11. **No 5-hour window known yet.** *Fixed — verified 2026-07-04.*
     `summarizeCurrentWindow()` used to treat "we've never seen a `rate_limits`
     snapshot" as "everything is in the current window," reporting a
@@ -199,6 +232,21 @@ doesn't expose a true per-person breakdown on a shared account.
     `usage.ts`) fell through to its `false` branch for every event —
     `WINDOW_KNOWN (windowStart !== null) = false`, `WINDOW_COST_USD = 0` — instead of
     reporting the $10 that actually exists in the log.
+    **SQL side: Fixed — verified 2026-07-04**, confirmed directly against
+    `get_team_window_summary()` itself (not a reimplementation of its logic). Window
+    membership is decided by `deltas_in_window`'s `cross join window_bounds`, and
+    `window_bounds` is only ever populated `from latest_rate_limits where
+    five_hour_resets_at is not null` — if no row anywhere carries rate-limit data,
+    `window_bounds` has zero rows, the cross join against it yields zero rows
+    regardless of how much cost exists, and the function's final result set is empty
+    for every user (not a zero-cost row — no row at all). Verified live against
+    `htrxdxtbrkdabrrqbpyr` in a transaction rolled back afterward: every real row's
+    `five_hour_pct` / `seven_day_pct` / `five_hour_resets_at` / `seven_day_resets_at`
+    was nulled out (simulating zero rate-limit data anywhere in the table) and a new
+    row with `cost_usd = 42.00` was inserted; `select count(*) from
+    get_team_window_summary()` returned **0** — not the $42, not a $0 row, no row at
+    all. Rolled back afterward; confirmed real data intact (415 rows, 400 with
+    rate limits, 0 leftover test rows).
 12. **SQL delta ordering had no tiebreak for identical timestamps.** *Fixed —
     verified 2026-07-04.* `session_cost_deltas()`'s `lag(...) over (partition by
     session_id order by recorded_at)` had no secondary sort key, while the extension's
