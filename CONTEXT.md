@@ -1,10 +1,19 @@
 # Context for future sessions
 
+> **Where this stands:** the current single-Room version — one hardcoded Room,
+> git-config/device-id identity, no real login — is the proven foundation. The next
+> stage, not yet built, is the real multi-Room product: `room_id` on every table, RLS
+> scoped per Room, GitHub OAuth login, and an invite flow. See PROJECT_STATUS.md's
+> "Open items" section for the full list.
+
 ## Goal
 
-Per-device usage tracking on one shared Claude Max account, used by 3 developers
-across 3 separate Macs. Each developer should be able to see their own share of the
-account's 5-hour and 7-day rate limits.
+A **Room** is a Claude Max account shared by a group of people, each on their own
+device. Anyone should be able to create a Room, invite others into it as **Room
+members**, and see how the account's 5-hour and 7-day rate limits are split across
+the Room. The current build hardcodes a single Room shared by 3 Room members across
+3 separate Macs — each Room member can see their own share of the account's 5-hour
+and 7-day rate limits.
 
 ## Data source
 
@@ -83,7 +92,7 @@ dashboard), `supabase/` (shared schema, sibling to both), `CONTEXT.md`,
 - The status-line hook (`extension/media/usage-logger.js`) logs locally only — no
   network calls.
 - The VS Code extension (`extension/`) owns wiring the hook into
-  `~/.claude/settings.json`, reads the local log, and shows the developer their own
+  `~/.claude/settings.json`, reads the local log, and shows the Room member their own
   usage. Later (Phase 3+) it also syncs aggregates to Supabase.
 - The admin dashboard (`dashboard/`, a later phase) reads from Supabase, not from
   any single machine's local log.
@@ -102,10 +111,10 @@ dashboard), `supabase/` (shared schema, sibling to both), `CONTEXT.md`,
   `media/usage-logger.js` into `~/.claude/team-usage/` and points
   `~/.claude/settings.json`'s `statusLine` at the copied file (asking first, and
   backing up to `settings.json.bak`, if a different `statusLine` is already
-  configured). Shows a status bar item (account 5h % + the developer's own cost this
+  configured). Shows a status bar item (account 5h % + the Room member's own cost this
   window, refreshed every 30s from the local log only) and a
   "Claude Usage: Show my usage" command that opens a webview with 5h/7d progress
-  bars, the developer's cost/tokens this window, and a table of daily peaks — all
+  bars, the Room member's cost/tokens this window, and a table of daily peaks — all
   computed from the local log.
 
 ## Status quo (Phase 3 complete)
@@ -124,7 +133,7 @@ dashboard), `supabase/` (shared schema, sibling to both), `CONTEXT.md`,
   ever leave via this path. `public.latest_per_user` and `public.daily_usage` views are
   for the future admin dashboard, granted to `service_role` only; `daily_usage` also
   reads session cost through `session_cost_deltas()` (filtering deltas by day).
-- `src/identity.ts` resolves a per-developer label (config override → git global
+- `src/identity.ts` resolves a per-Room-member label (config override → git global
   email/name → generated `~/.claude/team-usage/device-id.txt`) for labeling only —
   no login, no auth. Cached in memory once per extension session.
 - `src/supabaseClient.ts` / `src/sync.ts` / `src/team.ts` — the extension's 30s timer
@@ -137,7 +146,7 @@ dashboard), `supabase/` (shared schema, sibling to both), `CONTEXT.md`,
   log stays the source of truth.
 - New settings: `claudeUsage.supabaseUrl`, `claudeUsage.supabaseAnonKey`,
   `claudeUsage.userNameOverride`. `supabaseUrl`/`supabaseAnonKey` default to the
-  shared team project's URL and publishable/anon key (safe to ship — insert-only,
+  shared Room's Supabase project URL and publishable/anon key (safe to ship — insert-only,
   aggregates-only RPC) so the extension works with zero manual setup out of the box;
   `userNameOverride` defaults to empty (auto-derived from git identity). Setting
   either of the first two to an empty string disables sync entirely.

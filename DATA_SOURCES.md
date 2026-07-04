@@ -77,7 +77,7 @@ your_slice ≈ (your window_cost / everyone's window_cost) × account_five_hour_
 
 The total (`account_five_hour_pct`) is always exact — it comes straight from
 Anthropic. Only the *split between people* is an estimate, because Anthropic
-doesn't expose a true per-person breakdown on a shared account.
+doesn't expose a true per-Room-member breakdown on a shared account.
 
 ---
 
@@ -120,16 +120,16 @@ doesn't expose a true per-person breakdown on a shared account.
    only display the *most recent* model per snapshot, so a card's model label
    reflects the last model used, not a full history of every model in that session.
    (Not fixed, because not broken — just a labeling simplification.)
-5. **Claude.ai web chat usage.** Draws from the *same* shared 5h/7d pool as Claude
+5. **Claude.ai web chat usage.** Draws from the *same* shared 5h/7d limit as Claude
    Code, but we have zero visibility into it (no status line involved). The account
    total (`rate_limits.*`) still reflects it correctly; it just won't be attributed
-   to any specific person's card, so the sum of visible slices can be less than the
-   real total if someone is also chatting via claude.ai in the browser.
+   to any specific Room member's card, so the sum of visible slices can be less than
+   the real total if a Room member is also chatting via claude.ai in the browser.
 6. **Clock skew across machines.** Window attribution assumes each machine's local
    clock is roughly correct. Not actively checked; a machine with a significantly
    wrong clock could have its snapshots attributed to the wrong window.
-7. **Multiple parallel sessions per person** (e.g. two terminal tabs at once). Each
-   gets its own `session_id` and is delta'd independently, then summed per user.
+7. **Multiple parallel sessions per Room member** (e.g. two terminal tabs at once).
+   Each gets its own `session_id` and is delta'd independently, then summed per user.
    Verified with a concrete test: two interleaved sessions with raw readings
    `[2, 3]` and `[1, 4]` in the same window correctly summed to $7 across 2 sessions.
 8. **`session_id` missing on a snapshot.** *Fixed — verified 2026-07-04.* An earlier
@@ -149,9 +149,9 @@ doesn't expose a true per-person breakdown on a shared account.
    `sessionCostDeltas()` returned a single event (`session_id: "real"`, `costDelta:
    0.8`) — `TOTAL_COST = 0.8`, `SESSION_COUNT = 1`.
 9. **Daily bucketing timezone.** *Fixed — verified 2026-07-04.* `dailyPeaks()` used to
-   bucket "which day did this happen" using the developer's own machine's OS timezone
+   bucket "which day did this happen" using the Room member's own machine's OS timezone
    (`toLocaleDateString` without a `timeZone` option), while Supabase's `daily_usage`
-   view hardcodes `Asia/Kolkata` for every user. For a developer not physically in
+   view hardcodes `Asia/Kolkata` for every user. For a Room member not physically in
    that timezone, a session near midnight could land on a different calendar day in
    their own panel than on the shared dashboard. Fixed by making the extension bucket
    using the same fixed `Asia/Kolkata` timezone (`TEAM_DAY_TIMEZONE` in `usage.ts`)
