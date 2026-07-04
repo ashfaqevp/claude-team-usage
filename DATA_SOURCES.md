@@ -132,50 +132,85 @@ doesn't expose a true per-person breakdown on a shared account.
    gets its own `session_id` and is delta'd independently, then summed per user.
    Verified with a concrete test: two interleaved sessions with raw readings
    `[2, 3]` and `[1, 4]` in the same window correctly summed to $7 across 2 sessions.
-8. **`session_id` missing on a snapshot.** An earlier version of `sessionCostDeltas()`
-   gave every null-`session_id` snapshot its own synthetic one-off key. If Claude Code
-   ever omits `session_id` on a session's earliest render(s) and then starts reporting
-   it, this double-counted: the pre-session-id spend was counted once under the
-   throwaway key and again in full once the real id appeared, since that key's
-   "previous reading" also started at null. Verified wrong with a concrete case: true
-   readings `[0.50 (no session_id), 0.80 (real session_id)]` for one continuous
-   session — true spend $0.80, reported **$1.30**, session count inflated from 1 to 2.
-   Fixed by excluding null-`session_id` snapshots entirely instead of synthesizing a
-   key for them — a deliberate, safe *undercount* (matches `session_cost_deltas()` on
-   the Supabase side, which already excluded them via `where session_id is not null`;
-   the extension previously didn't, so the two disagreed on this specific case).
-9. **Daily bucketing timezone.** `dailyPeaks()` used to bucket "which day did this
-   happen" using the developer's own machine's OS timezone (`toLocaleDateString`
-   without a `timeZone` option), while Supabase's `daily_usage` view hardcodes
-   `Asia/Kolkata` for every user. For a developer not physically in that timezone, a
-   session near midnight could land on a different calendar day in their own panel
-   than on the shared dashboard. Fixed by making the extension bucket using the same
-   fixed `Asia/Kolkata` timezone (`TEAM_DAY_TIMEZONE` in `usage.ts`) regardless of the
-   machine's own timezone — verified by running the test suite under `TZ=America/New_York`
-   and confirming the day split still matched IST boundaries.
-10. **A snapshot's `ts` is present but unparseable.** `tsMillis()` falls back to epoch-0
-    for any date string it can't parse; since `sessionCostDeltas()` sorts by that value,
-    one bad timestamp used to sort to the front of a session's whole history, scrambling
-    the true chronological delta order. Verified wrong with a concrete case: true
-    readings `5 → 8 → 9` (true total $9) with a garbled `ts` on the middle one
-    reordered to `8 → 5 → 9`, produced **$4**, and fired a misleading "resumed-session
-    bug" warning that was really just bad timestamp data. Fixed by rejecting
-    unparseable-`ts` snapshots in two places: at `readLocalLog()` (never enters the
-    in-memory log at all) AND inside `sessionCostDeltas()` itself, with a distinct
-    "malformed timestamp" warning (not the resume-bug one) — the second guard matters
-    because `sessionCostDeltas()`/`summarizeCurrentWindow()` must stay safe to call
-    directly with in-memory data that never went through `readLocalLog()` (as tests,
-    or any future caller, might). Verified the fixed sequence now reports exactly $9
-    with no resume-bug warning fired. The same root cause existed on the sync path:
+8. **`session_id` missing on a snapshot.** *Fixed — verified 2026-07-04.* An earlier
+   version of `sessionCostDeltas()` gave every null-`session_id` snapshot its own
+   synthetic one-off key. If Claude Code ever omits `session_id` on a session's
+   earliest render(s) and then starts reporting it, this double-counted: the
+   pre-session-id spend was counted once under the throwaway key and again in full
+   once the real id appeared, since that key's "previous reading" also started at
+   null. Verified wrong with a concrete case: true readings `[0.50 (no session_id),
+   0.80 (real session_id)]` for one continuous session — true spend $0.80, reported
+   **$1.30**, session count inflated from 1 to 2. Fixed by excluding
+   null-`session_id` snapshots entirely instead of synthesizing a key for them — a
+   deliberate, safe *undercount* (matches `session_cost_deltas()` on the Supabase
+   side, which already excluded them via `where session_id is not null`; the
+   extension previously didn't, so the two disagreed on this specific case).
+   Re-verified 2026-07-04 by running the exact scenario against the compiled code:
+   `sessionCostDeltas()` returned a single event (`session_id: "real"`, `costDelta:
+   0.8`) — `TOTAL_COST = 0.8`, `SESSION_COUNT = 1`.
+9. **Daily bucketing timezone.** *Fixed — verified 2026-07-04.* `dailyPeaks()` used to
+   bucket "which day did this happen" using the developer's own machine's OS timezone
+   (`toLocaleDateString` without a `timeZone` option), while Supabase's `daily_usage`
+   view hardcodes `Asia/Kolkata` for every user. For a developer not physically in
+   that timezone, a session near midnight could land on a different calendar day in
+   their own panel than on the shared dashboard. Fixed by making the extension bucket
+   using the same fixed `Asia/Kolkata` timezone (`TEAM_DAY_TIMEZONE` in `usage.ts`)
+   regardless of the machine's own timezone — verified by running the test suite
+   under `TZ=America/New_York` and confirming the day split still matched IST
+   boundaries. Re-verified 2026-07-04 with a snapshot at `2026-01-01T19:00:00.000Z`
+   (UTC calendar date `2026-01-01`, but past midnight IST): the extension's
+   `dailyPeaks()` bucketed it under `2026-01-02`, and the identical
+   `(recorded_at at time zone 'Asia/Kolkata')::date` expression run directly against
+   the live Supabase project (not just the checked-in file) also returned
+   `2026-01-02` — confirmed matching, not just structurally identical code.
+10. **A snapshot's `ts` is present but unparseable.** *Fixed — verified 2026-07-04.*
+    `tsMillis()` falls back to epoch-0 for any date string it can't parse; since
+    `sessionCostDeltas()` sorts by that value, one bad timestamp used to sort to the
+    front of a session's whole history, scrambling the true chronological delta
+    order. Verified wrong with a concrete case: true readings `5 → 8 → 9` (true total
+    $9) with a garbled `ts` on the middle one reordered to `8 → 5 → 9`, produced
+    **$4**, and fired a misleading "resumed-session bug" warning that was really just
+    bad timestamp data. Fixed by rejecting unparseable-`ts` snapshots in two places:
+    at `readLocalLog()` (never enters the in-memory log at all) AND inside
+    `sessionCostDeltas()` itself, with a distinct "malformed timestamp" warning (not
+    the resume-bug one) — the second guard matters because
+    `sessionCostDeltas()`/`summarizeCurrentWindow()` must stay safe to call directly
+    with in-memory data that never went through `readLocalLog()` (as tests, or any
+    future caller, might). Verified the fixed sequence now reports exactly $9 with no
+    resume-bug warning fired. The same root cause existed on the sync path:
     `sync.ts`'s batch insert is all-or-nothing, so one row with an unparseable `ts`
-    reaching Supabase would fail the *entire* batch, and since the cursor only advances
-    on success, that row would permanently re-block sync every
-    retry. Fixed the same way in `mapToRow()` — reject and skip before it's ever sent.
-11. **No 5-hour window known yet.** `summarizeCurrentWindow()` used to treat "we've
-    never seen a `rate_limits` snapshot" as "everything is in the current window,"
-    reporting a session's/machine's entire lifetime cost as this window's cost.
-    Normally this only lasts a few seconds (before a session's first real API
-    response), but if rate-limit capture ever silently broke for any other reason, this
-    failed in the unsafe direction — a large, wrong, inflated number instead of an
-    honest "no data yet." Fixed to exclude everything when the window is unknown,
-    which is a safe undercount (zero) rather than a risky overcount.
+    reaching Supabase would fail the *entire* batch, and since the cursor only
+    advances on success, that row would permanently re-block sync every retry. Fixed
+    the same way in `mapToRow()` — reject and skip before it's ever sent. Re-verified
+    2026-07-04 by running `5 → [malformed ts] → 8 → 9` directly: `DELTA_TOTAL = 9`,
+    `RESUME_BUG_WARNING_FIRED = false` (only the distinct "malformed timestamp"
+    warning fired, captured and checked by string content, not just eyeballed).
+11. **No 5-hour window known yet.** *Fixed — verified 2026-07-04.*
+    `summarizeCurrentWindow()` used to treat "we've never seen a `rate_limits`
+    snapshot" as "everything is in the current window," reporting a
+    session's/machine's entire lifetime cost as this window's cost. Normally this
+    only lasts a few seconds (before a session's first real API response), but if
+    rate-limit capture ever silently broke for any other reason, this failed in the
+    unsafe direction — a large, wrong, inflated number instead of an honest "no data
+    yet." Fixed to exclude everything when the window is unknown, which is a safe
+    undercount (zero) rather than a risky overcount. Re-verified 2026-07-04: with two
+    real cost-bearing snapshots ($3 and $7) and no rate-limit-bearing snapshot at all,
+    `summarizeCurrentWindow()`'s `inWindow` ternary (`window ? ... : false` in
+    `usage.ts`) fell through to its `false` branch for every event —
+    `WINDOW_KNOWN (windowStart !== null) = false`, `WINDOW_COST_USD = 0` — instead of
+    reporting the $10 that actually exists in the log.
+12. **SQL delta ordering had no tiebreak for identical timestamps.** *Fixed —
+    verified 2026-07-04.* `session_cost_deltas()`'s `lag(...) over (partition by
+    session_id order by recorded_at)` had no secondary sort key, while the extension's
+    `sessionCostDeltas()` sorts with `Array.prototype.sort`, which is stable and
+    preserves file/insertion order on an exact tie. If two snapshots for the same
+    session ever shared an identical `recorded_at` (e.g. two sub-millisecond
+    status-line renders), Postgres wasn't guaranteed to order them the same way the
+    extension's array did, so that one interval's cost could split differently
+    between the extension's own number and the shared dashboard — the exact class of
+    drift edge case 3 warns about. Fixed by adding `s.id` (an always-increasing
+    identity column reflecting insertion order) as a secondary sort key in both
+    `lag()` calls: `order by s.recorded_at, s.id`. Applied to `supabase/schema.sql`
+    and re-applied live to the `htrxdxtbrkdabrrqbpyr` project via migration
+    `session_cost_deltas_tiebreak_by_id` — confirmed live by reading back
+    `pg_get_functiondef()` and matching on the new `order by` clause.
