@@ -1,10 +1,17 @@
 # Context for future sessions
 
-> **Where this stands:** the current single-Room version — one hardcoded Room,
-> git-config/device-id identity, no real login — is the proven foundation. The next
-> stage, not yet built, is the real multi-Room product: `room_id` on every table, RLS
-> scoped per Room, GitHub OAuth login, and an invite flow. See PROJECT_STATUS.md's
-> "Open items" section for the full list.
+> **Where this stands:** the single-Room engine (Phases 1–5) is the proven foundation.
+> Now building the multi-user product ("Claude Room") per CLAUDE_ROOM_BUILD_GUIDE.md
+> (Phases 6–10). This model supersedes the earlier "room_id + invite flow" sketch:
+> - A **Room is a Claude account**, identified by its org email
+>   (`oauthAccount.emailAddress` from `~/.claude.json`), stored as `account_email` on
+>   each snapshot. **No room_id, no room codes, no invite flow** — Rooms are implicit
+>   (a Room exists once its first row arrives).
+> - **Member identity within a Room** is still the git/device label (unchanged).
+> - **Owner access** = GitHub login on the dashboard (Google later); the verified login
+>   email must equal the Room's Claude email — that match is the whole authorization.
+> - Reads are locked server-side to the owner's own Room; writes stay insert-only
+>   (tighten later). See the build guide's "Future hardening" for deferred items.
 
 ## Goal
 
