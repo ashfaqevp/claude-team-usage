@@ -57,6 +57,14 @@ create policy "anon can insert usage snapshots"
 -- side does the same (sessionCostDeltas() in usage.ts), after an earlier version there
 -- gave each one a synthetic key and double-counted. Excluding is a safe undercount;
 -- synthesizing a key is not. Keep both sides matching if this ever changes.
+--
+-- `order by s.recorded_at, s.id` (not recorded_at alone): two snapshots for the same
+-- session can share an identical recorded_at (sub-millisecond status-line renders).
+-- `id` is an always-increasing identity column, so it breaks the tie in insertion
+-- order — matching the extension's stable Array.sort, which preserves file order on
+-- an equal timestamp. Without this, a tied pair could be ordered differently here than
+-- in usage.ts, giving the extension and the dashboard different numbers for that one
+-- interval.
 create or replace function public.session_cost_deltas()
 returns table (
   user_name text,
@@ -75,7 +83,7 @@ begin
     select
       s.session_id,
       s.cost_usd as raw_cost_usd,
-      lag(s.cost_usd) over (partition by s.session_id order by s.recorded_at) as prior_cost_usd
+      lag(s.cost_usd) over (partition by s.session_id order by s.recorded_at, s.id) as prior_cost_usd
     from public.usage_snapshots s
     where s.session_id is not null and s.cost_usd is not null
   loop
@@ -91,10 +99,10 @@ begin
     s.session_id,
     s.recorded_at,
     case
-      when lag(s.cost_usd) over (partition by s.session_id order by s.recorded_at) is null
+      when lag(s.cost_usd) over (partition by s.session_id order by s.recorded_at, s.id) is null
         then s.cost_usd
       else greatest(
-        s.cost_usd - lag(s.cost_usd) over (partition by s.session_id order by s.recorded_at),
+        s.cost_usd - lag(s.cost_usd) over (partition by s.session_id order by s.recorded_at, s.id),
         0
       )
     end as cost_delta
