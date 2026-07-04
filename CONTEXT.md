@@ -12,6 +12,8 @@
 >   email must equal the Room's Claude email — that match is the whole authorization.
 > - Reads are locked server-side to the owner's own Room; writes stay insert-only
 >   (tighten later). See the build guide's "Future hardening" for deferred items.
+> - Phase 6 done: extension reads `oauthAccount.emailAddress` on its 30s timer and
+>   stamps every synced row with `account_email` (falls back to `'unknown'` if unreadable).
 
 ## Goal
 
@@ -158,5 +160,44 @@ dashboard), `supabase/` (shared schema, sibling to both), `CONTEXT.md`,
   `userNameOverride` defaults to empty (auto-derived from git identity). Setting
   either of the first two to an empty string disables sync entirely.
 
+## Status quo (Phase 7 complete)
+
+- `public.usage_snapshots` now carries `account_email` (indexed with `recorded_at
+  desc`), backfilled on the existing rows to the one real Room's account
+  (`rashid@iocod.com`) so history isn't orphaned. Phase 3's insert-only anon policy
+  (`with check (true)`) is unchanged — rows now simply also carry `account_email`.
+- `public.rooms` (`claude_email` primary key, `room_name`, `created_at`) and
+  `public.admins` (`email` primary key) hold the Room registry and admin allowlist.
+  Both have RLS enabled with no policies and no anon/authenticated grants — only
+  `service_role` (used server-side by the dashboard) can read/write them. Seeded
+  `rashid@iocod.com` as the placeholder admin.
+- `public.get_room_window_summary(p_email text)` is `get_team_window_summary()`'s
+  Room-scoped counterpart: same per-member `window_cost_usd` + latest account-wide
+  `five_hour_pct`/`seven_day_pct`/reset timestamps, filtered to one Room throughout.
+  SECURITY DEFINER, granted to `service_role` only (not `anon`) — the future dashboard
+  server route is the only caller, passing a verified owner email.
+- `public.latest_per_user` and `public.daily_usage` now carry `account_email` (still
+  `service_role`-only) so a caller can filter to one Room. Both still read session cost
+  exclusively through `session_cost_deltas()` — attributing a delta to a Room uses a
+  `session_id -> account_email` lookup (a session's account is invariant), never a
+  reimplementation of the delta math itself.
+- `public.list_rooms()` (SECURITY DEFINER, `service_role` only) returns one row per
+  Room (`claude_email`, `room_name`, `member_count`, `last_active`, `five_hour_pct`) —
+  derived from distinct `account_email` values actually present in `usage_snapshots`,
+  left-joined to `rooms` for the name. Feeds the future admin Room switcher.
+- `public.get_room_name(p_email text)` (SECURITY DEFINER, granted to `anon`) returns
+  only `rooms.room_name` for an email — no usage/cost data. Included after confirming
+  the tradeoff (anon can probe "does a Room with this email exist") is acceptable for
+  internal use.
+- Applied directly to project `htrxdxtbrkdabrrqbpyr` via the Supabase MCP tool
+  (migration `phase7_multiroom_schema`) and verified live: inserted 6 test rows across
+  two fake Rooms, confirmed `get_room_window_summary()` returns only each Room's own
+  members, confirmed `list_rooms()` shows all Rooms with correct member counts, and
+  confirmed (as `anon`, via `set local role anon` in a rolled-back transaction) that
+  `anon` still cannot `SELECT` raw `usage_snapshots` rows or `EXECUTE`
+  `get_room_window_summary` (both `42501 permission denied`), while its Phase 3
+  insert-only access and the new `get_room_name` grant still work. Test rows deleted
+  afterward. `supabase/schema.sql` updated to match.
+
 Not yet built: the admin dashboard (Phase 4+), which will read `latest_per_user` /
-`daily_usage` with the service_role key.
+`daily_usage` with the service_role key, and the owner-login/Room-scoped UI (Phase 8+).

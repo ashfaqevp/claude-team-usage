@@ -226,3 +226,238 @@ revoke all on public.latest_per_user from anon, authenticated;
 revoke all on public.daily_usage from anon, authenticated;
 grant select on public.latest_per_user to service_role;
 grant select on public.daily_usage to service_role;
+
+-- Phase 7: multi-Room data model. A Room = account_email (the Claude account org
+-- email). Applied directly to project htrxdxtbrkdabrrqbpyr via the Supabase MCP tool
+-- (migration `phase7_multiroom_schema`). Kept here as source of truth / for manual
+-- re-application. Phase 3's insert-only anon policy and session_cost_deltas() are
+-- untouched by this phase.
+
+alter table public.usage_snapshots
+  add column if not exists account_email text;
+
+create index if not exists usage_snapshots_account_email_recorded_at_idx
+  on public.usage_snapshots (account_email, recorded_at desc);
+
+-- One-time backfill: the pre-Phase-7 rows have no email. Replace with your Room's
+-- real Claude account email if re-applying this file from scratch.
+update public.usage_snapshots
+set account_email = 'rashid@iocod.com'
+where account_email is null;
+
+-- Room registry: one row per Room (Claude account email), holding its display name.
+-- No anon/authenticated access - dashboard server route reads/writes with service_role.
+create table if not exists public.rooms (
+  claude_email text primary key,
+  room_name text,
+  created_at timestamptz not null default now()
+);
+
+alter table public.rooms enable row level security;
+revoke all on public.rooms from anon, authenticated;
+grant select, insert, update, delete on public.rooms to service_role;
+
+-- Admin allowlist for the dashboard's Room switcher. No anon/authenticated access.
+create table if not exists public.admins (
+  email text primary key
+);
+
+alter table public.admins enable row level security;
+revoke all on public.admins from anon, authenticated;
+grant select, insert, update, delete on public.admins to service_role;
+
+insert into public.admins (email) values ('rashid@iocod.com')
+on conflict (email) do nothing;
+
+-- Room-scoped window summary: identical shape/logic to get_team_window_summary(),
+-- filtered to one Room. session_id -> account_email is looked up via a per-session
+-- mapping (distinct on session_id) rather than joining session_cost_deltas() back to
+-- usage_snapshots row-for-row on (session_id, recorded_at) - two snapshots in the same
+-- session can share a recorded_at (sub-ms status-line renders), which would fan out
+-- and double-count. account_email is account-wide and invariant within a session, so
+-- joining on session_id alone is safe. session_cost_deltas() itself is untouched -
+-- this only maps its output to a Room after the fact.
+create or replace function public.get_room_window_summary(p_email text)
+returns table (
+  user_name text,
+  window_cost_usd numeric,
+  account_five_hour_pct numeric,
+  account_seven_day_pct numeric,
+  five_hour_resets_at timestamptz,
+  seven_day_resets_at timestamptz
+)
+language sql
+security definer
+set search_path = public
+as $$
+  with latest_rate_limits as (
+    select five_hour_pct, seven_day_pct, five_hour_resets_at, seven_day_resets_at
+    from public.usage_snapshots
+    where account_email = p_email
+      and (five_hour_pct is not null or seven_day_pct is not null)
+    order by recorded_at desc
+    limit 1
+  ),
+  window_bounds as (
+    select
+      five_hour_resets_at - interval '5 hours' as window_start,
+      five_hour_resets_at as window_end
+    from latest_rate_limits
+    where five_hour_resets_at is not null
+  ),
+  session_accounts as (
+    select distinct on (session_id) session_id, account_email
+    from public.usage_snapshots
+    where session_id is not null
+    order by session_id, recorded_at desc, id desc
+  ),
+  deltas_in_window as (
+    select scd.user_name, scd.cost_delta
+    from public.session_cost_deltas() scd
+    join session_accounts sa on sa.session_id = scd.session_id
+    cross join window_bounds wb
+    where sa.account_email = p_email
+      and scd.recorded_at >= wb.window_start and scd.recorded_at <= wb.window_end
+  )
+  select
+    diw.user_name,
+    sum(coalesce(diw.cost_delta, 0)) as window_cost_usd,
+    lrl.five_hour_pct as account_five_hour_pct,
+    lrl.seven_day_pct as account_seven_day_pct,
+    lrl.five_hour_resets_at,
+    lrl.seven_day_resets_at
+  from deltas_in_window diw
+  cross join latest_rate_limits lrl
+  group by diw.user_name, lrl.five_hour_pct, lrl.seven_day_pct, lrl.five_hour_resets_at, lrl.seven_day_resets_at;
+$$;
+
+revoke all on function public.get_room_window_summary(text) from public, anon, authenticated;
+grant execute on function public.get_room_window_summary(text) to service_role;
+
+-- Both dashboard views are recreated here Room-aware: they now carry account_email so
+-- a caller (the Nuxt server route) can filter to one Room. Session cost is still read
+-- exclusively through session_cost_deltas() - no delta logic is reimplemented, only
+-- the session_id -> account_email mapping needed to attribute each delta to a Room.
+create or replace view public.latest_per_user as
+select distinct on (user_name) *
+from public.usage_snapshots
+order by user_name, recorded_at desc;
+
+drop view if exists public.daily_usage;
+
+create view public.daily_usage as
+with session_accounts as (
+  select distinct on (session_id) session_id, account_email
+  from public.usage_snapshots
+  where session_id is not null
+  order by session_id, recorded_at desc, id desc
+),
+delta_days as (
+  select
+    scd.user_name,
+    scd.cost_delta,
+    sa.account_email,
+    (scd.recorded_at at time zone 'Asia/Kolkata')::date as day
+  from public.session_cost_deltas() scd
+  join session_accounts sa on sa.session_id = scd.session_id
+),
+day_costs as (
+  select account_email, user_name, day, sum(cost_delta) as total_cost_usd
+  from delta_days
+  group by account_email, user_name, day
+),
+session_days as (
+  select distinct account_email, user_name, session_id, (recorded_at at time zone 'Asia/Kolkata')::date as day
+  from public.usage_snapshots
+  where session_id is not null
+),
+session_counts as (
+  select account_email, user_name, day, count(*) as session_count
+  from session_days
+  group by account_email, user_name, day
+),
+daily_peaks as (
+  select
+    account_email,
+    user_name,
+    (recorded_at at time zone 'Asia/Kolkata')::date as day,
+    max(five_hour_pct) as peak_5h,
+    max(seven_day_pct) as peak_7d
+  from public.usage_snapshots
+  group by account_email, user_name, (recorded_at at time zone 'Asia/Kolkata')::date
+)
+select
+  dp.account_email,
+  dp.user_name,
+  dp.day,
+  dp.peak_5h,
+  dp.peak_7d,
+  coalesce(dc.total_cost_usd, 0) as total_cost_usd,
+  coalesce(sc.session_count, 0) as session_count
+from daily_peaks dp
+left join day_costs dc on dc.account_email = dp.account_email and dc.user_name = dp.user_name and dc.day = dp.day
+left join session_counts sc on sc.account_email = dp.account_email and sc.user_name = dp.user_name and sc.day = dp.day;
+
+revoke all on public.latest_per_user from anon, authenticated;
+revoke all on public.daily_usage from anon, authenticated;
+grant select on public.latest_per_user to service_role;
+grant select on public.daily_usage to service_role;
+
+-- Admin Room switcher: one row per Room derived from usage_snapshots (a Room exists
+-- once its first row arrives - no room_id/invite flow), left-joined to rooms for name.
+create or replace function public.list_rooms()
+returns table (
+  claude_email text,
+  room_name text,
+  member_count bigint,
+  last_active timestamptz,
+  five_hour_pct numeric
+)
+language sql
+security definer
+set search_path = public
+as $$
+  with room_stats as (
+    select
+      account_email,
+      count(distinct user_name) as member_count,
+      max(recorded_at) as last_active
+    from public.usage_snapshots
+    where account_email is not null
+    group by account_email
+  ),
+  latest_rate_limit as (
+    select distinct on (account_email) account_email, five_hour_pct
+    from public.usage_snapshots
+    where account_email is not null and five_hour_pct is not null
+    order by account_email, recorded_at desc
+  )
+  select
+    rs.account_email as claude_email,
+    r.room_name,
+    rs.member_count,
+    rs.last_active,
+    lrl.five_hour_pct
+  from room_stats rs
+  left join public.rooms r on r.claude_email = rs.account_email
+  left join latest_rate_limit lrl on lrl.account_email = rs.account_email
+  order by rs.last_active desc;
+$$;
+
+revoke all on function public.list_rooms() from public, anon, authenticated;
+grant execute on function public.list_rooms() to service_role;
+
+-- Optional (item 7): non-sensitive Room-name lookup for the extension. Returns only
+-- room_name for the given email - no usage/cost data. Tradeoff accepted: anyone with
+-- the anon key can probe "does a Room with this email exist, and what's it called."
+create or replace function public.get_room_name(p_email text)
+returns text
+language sql
+security definer
+set search_path = public
+as $$
+  select room_name from public.rooms where claude_email = p_email;
+$$;
+
+revoke all on function public.get_room_name(text) from public, authenticated;
+grant execute on function public.get_room_name(text) to anon;
