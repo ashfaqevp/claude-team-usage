@@ -29,12 +29,23 @@ function str(v: unknown): string | null {
   return typeof v === 'string' && v.length > 0 ? v : null;
 }
 
-/** Maps a parsed local-log line to usage_snapshots columns. Null if it lacks a recorded_at (NOT NULL column). */
+/**
+ * Maps a parsed local-log line to usage_snapshots columns. Null if it lacks a valid
+ * recorded_at (NOT NULL column) — including when `ts` is present but unparseable,
+ * since insertRows sends the whole pending batch as one request; a single row that
+ * Postgres's timestamptz parser rejects would fail the entire batch, and because the
+ * sync cursor only advances on success, that one row would permanently block sync for
+ * this machine (every retry re-includes it) rather than just being skipped once.
+ */
 function mapToRow(parsed: unknown, userName: string, machine: string): Record<string, unknown> | null {
   if (!parsed || typeof parsed !== 'object') return null;
   const p = parsed as Record<string, unknown>;
   const recordedAt = str(p.ts);
   if (!recordedAt) return null;
+  if (!Number.isFinite(Date.parse(recordedAt))) {
+    console.warn(`[claude-team-usage] skipping sync of a row with an unparseable ts: ${JSON.stringify(recordedAt)}`);
+    return null;
+  }
 
   return {
     user_name: userName,

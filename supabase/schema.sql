@@ -51,6 +51,12 @@ create policy "anon can insert usage snapshots"
 -- correctly between them, instead of dumping its entire lifetime total into whichever
 -- bucket its latest snapshot happens to land in. Both get_team_window_summary and
 -- daily_usage read session cost through this function so the two stay consistent.
+--
+-- Rows with a null session_id are deliberately excluded (see `where session_id is not
+-- null` below) rather than each treated as its own one-off session — the extension
+-- side does the same (sessionCostDeltas() in usage.ts), after an earlier version there
+-- gave each one a synthetic key and double-counted. Excluding is a safe undercount;
+-- synthesizing a key is not. Keep both sides matching if this ever changes.
 create or replace function public.session_cost_deltas()
 returns table (
   user_name text,

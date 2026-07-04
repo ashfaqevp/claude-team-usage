@@ -48,6 +48,13 @@ export function readLocalLog(logFile: string): Snapshot[] {
       try {
         const parsed = JSON.parse(trimmed);
         if (parsed && typeof parsed === 'object' && typeof parsed.ts === 'string') {
+          if (!Number.isFinite(Date.parse(parsed.ts))) {
+            // An unparseable ts would otherwise sort to epoch-0 (see tsMillis below)
+            // and scramble that session's chronological delta order — reject it here
+            // instead of letting it silently corrupt totals downstream.
+            console.warn(`[claude-team-usage] skipping local-log line with an unparseable ts: ${JSON.stringify(parsed.ts)}`);
+            continue;
+          }
           snapshots.push(parsed as Snapshot);
         }
       } catch {
@@ -60,6 +67,7 @@ export function readLocalLog(logFile: string): Snapshot[] {
   }
 }
 
+/** Callers should only ever see snapshots already validated by readLocalLog; 0 here is a last-resort default, not the primary safeguard. */
 function tsMillis(s: Snapshot): number {
   const t = Date.parse(s.ts);
   return Number.isFinite(t) ? t : 0;
@@ -109,15 +117,38 @@ function clampedDelta(current: number, prev: number | null, sessionKey: string, 
  * entire lifetime total to a single bucket. It also absorbs Claude Code's known
  * resumed-session reset bug (COST_RESET_BUG_URL): a drop produces a zero-contribution
  * event (logged) rather than corrupting the running total.
+ *
+ * Snapshots with a null `session_id` are skipped entirely — there is no reliable key
+ * to diff them against a previous reading. Treating each one as its own synthetic
+ * one-off session (an earlier version of this code did) double-counts: if a session
+ * only starts reporting its real `session_id` a snapshot or two in, the cost already
+ * accrued under the null id gets counted once there and again in full once the real id
+ * appears. Excluding them instead is a deliberate, safe under-count (matches
+ * `session_cost_deltas()` on the Supabase side, which does the same) rather than a
+ * risky over-count.
+ *
+ * Snapshots with an unparseable `ts` are also excluded here, not just at
+ * `readLocalLog()` — this function must be safe to call directly (as it is from
+ * tests, and could be from a future caller) without relying on that one entry point
+ * having already filtered the input. Without this, such a snapshot would sort to
+ * epoch-0 (see tsMillis) and scramble the true delta order for its session.
  */
 export function sessionCostDeltas(snapshots: Snapshot[]): SessionCostEvent[] {
-  const sorted = [...snapshots].sort((a, b) => tsMillis(a) - tsMillis(b));
+  const sorted = snapshots
+    .filter((s) => {
+      if (Number.isFinite(Date.parse(s.ts))) return true;
+      console.warn(
+        `[claude-team-usage] malformed timestamp — excluding snapshot from delta calculation: ${JSON.stringify(s.ts)}`
+      );
+      return false;
+    })
+    .sort((a, b) => tsMillis(a) - tsMillis(b));
   const trackers = new Map<string, FieldTracker>();
   const events: SessionCostEvent[] = [];
-  let fallbackIndex = 0;
 
   for (const s of sorted) {
-    const key = s.session_id != null ? s.session_id : `__no-session-${fallbackIndex++}`;
+    if (s.session_id == null) continue;
+    const key = s.session_id;
     const tracker = trackers.get(key) ?? { prevCost: null, prevInputTokens: null, prevOutputTokens: null };
 
     const costDelta =
@@ -172,7 +203,12 @@ export function summarizeCurrentWindow(snapshots: Snapshot[]): WindowSummary {
   const sessionsInWindow = new Set<string>();
 
   for (const e of events) {
-    const inWindow = window ? e.tsMillis >= window.start && e.tsMillis <= window.end : true;
+    // If the current window isn't known yet (no rate_limits snapshot seen at all —
+    // normally only true for a few seconds before a session's first real API
+    // response), exclude everything rather than treating the entire local log's
+    // lifetime history as "this window's" cost. An undercount of zero is a far safer
+    // failure than reporting a wildly inflated window total.
+    const inWindow = window ? e.tsMillis >= window.start && e.tsMillis <= window.end : false;
     if (!inWindow) continue;
     sessionsInWindow.add(e.sessionKey);
     windowCostUsd += e.costDelta;
@@ -196,16 +232,23 @@ export function summarizeCurrentWindow(snapshots: Snapshot[]): WindowSummary {
   };
 }
 
-function localDateKey(ms: number): string {
-  // en-CA formats as YYYY-MM-DD in the local timezone.
-  return new Date(ms).toLocaleDateString('en-CA');
+// Must match the hardcoded timezone in supabase/schema.sql's daily_usage view — this
+// is a shared team convention for "what day did this happen", not each developer's own
+// machine timezone. Using the OS-local timezone here instead would make a developer's
+// own daily-peaks panel disagree with the team dashboard about which day a session
+// near midnight landed on, for anyone not physically in that timezone.
+const TEAM_DAY_TIMEZONE = 'Asia/Kolkata';
+
+function teamDateKey(ms: number): string {
+  // en-CA formats as YYYY-MM-DD.
+  return new Date(ms).toLocaleDateString('en-CA', { timeZone: TEAM_DAY_TIMEZONE });
 }
 
 /** Per-day peak account percentages and per-day cost (delta-attributed by the day each increase happened). */
 export function dailyPeaks(snapshots: Snapshot[], maxDays = 14): DailyPeak[] {
   const peaks = new Map<string, { fiveHour: number | null; sevenDay: number | null }>();
   for (const s of snapshots) {
-    const key = localDateKey(tsMillis(s));
+    const key = teamDateKey(tsMillis(s));
     const entry = peaks.get(key) || { fiveHour: null, sevenDay: null };
     if (typeof s.five_hour_pct === 'number' && (entry.fiveHour == null || s.five_hour_pct > entry.fiveHour)) {
       entry.fiveHour = s.five_hour_pct;
@@ -218,7 +261,7 @@ export function dailyPeaks(snapshots: Snapshot[], maxDays = 14): DailyPeak[] {
 
   const costByDay = new Map<string, { cost: number; sessions: Set<string> }>();
   for (const e of sessionCostDeltas(snapshots)) {
-    const key = localDateKey(e.tsMillis);
+    const key = teamDateKey(e.tsMillis);
     const entry = costByDay.get(key) || { cost: 0, sessions: new Set<string>() };
     entry.cost += e.costDelta;
     entry.sessions.add(e.sessionKey);
