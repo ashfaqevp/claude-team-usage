@@ -14,6 +14,7 @@ import {
 import { syncLocalLog } from './sync';
 import { fetchTeamSlice, TeamSlice } from './team';
 import { resolveIdentity } from './identity';
+import { readClaudeAccountEmail } from './claudeAccount';
 
 const TEAM_USAGE_DIR = path.join(os.homedir(), '.claude', 'team-usage');
 const LOGGER_DEST = path.join(TEAM_USAGE_DIR, 'usage-logger.js');
@@ -231,7 +232,8 @@ function showUsagePanel(context: vscode.ExtensionContext): void {
     const summary = summarizeCurrentWindow(snapshots);
     const peaks = dailyPeaks(snapshots);
     const teamSlice = await tryFetchTeamSlice();
-    panel.webview.html = renderHtml(summary, peaks, teamSlice);
+    const accountEmail = readClaudeAccountEmail();
+    panel.webview.html = renderHtml(summary, peaks, teamSlice, accountEmail);
   };
 
   render();
@@ -242,7 +244,8 @@ function showUsagePanel(context: vscode.ExtensionContext): void {
 function renderHtml(
   summary: ReturnType<typeof summarizeCurrentWindow>,
   peaks: ReturnType<typeof dailyPeaks>,
-  teamSlice: TeamSlice | null
+  teamSlice: TeamSlice | null,
+  accountEmail: string | null
 ): string {
   const bar = (pct: number | null, colorVar: string) => {
     const clamped = typeof pct === 'number' ? Math.max(0, Math.min(100, pct)) : 0;
@@ -296,6 +299,11 @@ function renderHtml(
 </style>
 </head>
 <body>
+  <div class="stat">${
+    accountEmail
+      ? `Tracking Claude account: ${escapeHtml(accountEmail)}`
+      : `Couldn't read your Claude account email — usage is still being tracked as 'unknown'.`
+  }</div>
   ${
     teamSlice
       ? `<h2>Team</h2>

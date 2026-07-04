@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { insertRows, isSupabaseConfigured } from './supabaseClient';
 import { resolveIdentity } from './identity';
+import { readClaudeAccountEmail } from './claudeAccount';
 
 // Cursor is a count of complete lines already synced. This assumes local-log.jsonl
 // is only ever appended to (true today, per usage-logger.js) — if it's ever rotated
@@ -93,6 +94,9 @@ export async function syncLocalLog(context: vscode.ExtensionContext, logFile: st
   const pending = completeLines.slice(cursor);
   const userName = resolveIdentity();
   const machine = os.hostname();
+  // Rows with no readable Claude account email are tagged 'unknown' so they land in
+  // an unknown bucket rather than being silently mixed into a real Room.
+  const accountEmail = readClaudeAccountEmail() || 'unknown';
 
   const rows: Record<string, unknown>[] = [];
   for (const line of pending) {
@@ -100,7 +104,7 @@ export async function syncLocalLog(context: vscode.ExtensionContext, logFile: st
     if (!trimmed) continue;
     try {
       const row = mapToRow(JSON.parse(trimmed), userName, machine);
-      if (row) rows.push(row);
+      if (row) rows.push({ ...row, account_email: accountEmail });
     } catch {
       // Skip malformed lines; they still count toward the cursor advance below.
     }
