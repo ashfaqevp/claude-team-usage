@@ -99,10 +99,21 @@ thing.
 
 **Dashboard** — Nuxt 4 + **shadcn-vue** (the Vue port of shadcn; *not* React shadcn).
 If a shadcn-vue registry/MCP tool is available in the Claude Code session, use it to add
-components; otherwise use the shadcn-vue CLI. Layout:
+components; otherwise use the shadcn-vue CLI.
 
-- **Top bar:** "Claude Room" wordmark, the signed-in user, a sign-out control. An
-  "Admin" badge if the user is an admin.
+**Two separate entry points, two separate audiences — not one page with a badge:**
+
+- **`/` — the owner page.** GitHub login only. Verified login email must match a
+  Room's Claude email. An owner only ever sees their own Room here. No admin concept
+  exists on this page at all.
+- **`/admin` — the admin page.** Supabase email/password login (not GitHub — the
+  admin isn't proving they own a Room, they're a fixed, known operator). Lists every
+  Room and opens any of them in the same Room-view component the owner sees. Reached
+  only by its own URL, never surfaced on `/`.
+
+Owner page (`/`) layout:
+
+- **Top bar:** "Claude Room" wordmark, the signed-in user, a sign-out control.
 - **Room header:** the Room name (inline-editable by the owner), the tracked Claude
   account email, live **5-hour** and **7-day** account bars with **reset countdowns**,
   and total window cost clearly labelled **"API-equivalent (Max plan — not real spend)."**
@@ -120,8 +131,9 @@ components; otherwise use the shadcn-vue CLI. Layout:
   as a failed fetch.
 - **Auto-refresh every 30s.**
 
-**Admin view:** a Room switcher listing every Room with a couple of at-a-glance stats;
-picking one renders the *exact same* Room view an owner sees.
+**Admin page (`/admin`):** its own login screen (email/password), then a Room switcher
+listing every Room with a couple of at-a-glance stats; picking one renders the *exact
+same* Room view an owner sees on `/`.
 
 **Extension webview** — plain HTML/CSS/JS (no shadcn here), but bring it up to the same
 standard:
@@ -143,18 +155,18 @@ standard:
 Everything here is derivable from data the logger *already* captures — no new
 collection, no new privacy surface:
 
-| Feature | Comes from |
-| --- | --- |
-| Account 5h % / 7d % + reset countdowns | `five_hour_pct` / `seven_day_pct` / `*_resets_at` |
-| Per-member slice of 5h limit | existing slice formula |
-| Per-member window cost (API-equivalent) | `cost_usd` deltas (unchanged) |
-| Per-member tokens in/out | `input_tokens` / `output_tokens` |
-| Per-member current/last model | `model` |
-| Active / idle + last-seen | compare `recorded_at` to now |
-| Top user this window / most active today | aggregate existing cost |
-| Total sessions | distinct `session_id` |
-| Daily peaks / activity timeline | `daily_usage` view |
-| Room name + tracked account | new `rooms` table + `account_email` |
+| Feature                                  | Comes from                                              |
+| ---------------------------------------- | ------------------------------------------------------- |
+| Account 5h % / 7d % + reset countdowns   | `five_hour_pct` / `seven_day_pct` / `*_resets_at` |
+| Per-member slice of 5h limit             | existing slice formula                                  |
+| Per-member window cost (API-equivalent)  | `cost_usd` deltas (unchanged)                         |
+| Per-member tokens in/out                 | `input_tokens` / `output_tokens`                    |
+| Per-member current/last model            | `model`                                               |
+| Active / idle + last-seen                | compare`recorded_at` to now                           |
+| Top user this window / most active today | aggregate existing cost                                 |
+| Total sessions                           | distinct`session_id`                                  |
+| Daily peaks / activity timeline          | `daily_usage` view                                    |
+| Room name + tracked account              | new`rooms` table + `account_email`                  |
 
 Deliberately **not** now: authenticated inserts, Google login, invite/approval flows,
 hard exclusion filtering, `CLAUDE_CONFIG_DIR` enforcement, timestamp plausibility checks.
@@ -198,6 +210,7 @@ cat ~/.claude.json | jq -r '.oauthAccount.emailAddress'
 ```
 
 Then confirm by hand:
+
 - It **survives** log out → log back in (same path, same value).
 - It's the **same path on all 3 Macs**.
 - Logging into a **different** Claude account **changes** the value (this is the proof
@@ -267,6 +280,7 @@ node scripts/print-claude-email.js      # prints your real Claude account email
   now carries `account_email`. Ask for the **printed object**, not a description.
 
 ### CHECKPOINT
+
 `git commit -am "Phase 6: extension stamps snapshots with Claude account email (Room key)" && git tag v1.1-room-key`
 
 ---
@@ -365,6 +379,7 @@ SQL editor and reproduce those checks by hand. Confirm the backfill set your exi
 rows' `account_email` (query a couple).
 
 ### CHECKPOINT
+
 `git commit -am "Phase 7: multi-Room schema (account_email, rooms, admins, scoped reads)" && git tag v1.2-multiroom-db`
 
 ---
@@ -374,6 +389,10 @@ rows' `account_email` (query a couple).
 **Goal:** an owner signs in with GitHub, and sees **only their own Room** (matched by
 email), in a modern shadcn-vue interface with the member cards, insights, timeline, and
 empty states from the design section. Owner can name their Room on first login.
+
+**Scope note:** this phase builds `/` (the owner page) only. There is no admin logic,
+badge, or switcher anywhere in this phase — that's entirely Phase 9's `/admin` page,
+built separately so the two audiences never share a login screen or a code path.
 
 ### Simpler notes
 
@@ -462,6 +481,30 @@ Keep it in the same repo as extension/, its own Nuxt app. Secret key server-only
 we'll verify that in the test.
 ```
 
+### Seed a fake Room for controllable UI testing (do this once, before the TEST below)
+
+Real data from `rashid@iocod.com` is genuine but not controllable — you can't easily
+force "5 members, one near the 5h limit, one idle for days" on demand. For testing the
+UI's visual states (crowded grid, near-limit colours, idle/dimmed cards, empty state),
+seed a disposable fake Room instead. Ask Claude Code:
+
+```
+Write scripts/seed-test-room.js (dev-only, not shipped, not referenced by the extension
+or dashboard). Using the Supabase JS client with the SERVICE ROLE key (read from
+env/.env, never hardcoded), insert a handful of usage_snapshots rows for
+account_email = 'test-room@example.com': 4 distinct user_names, varied cost_usd /
+five_hour_pct (one near 90%, one near 10%), varied recorded_at (some in the last few
+minutes = "active", one a few hours old = "idle"), all sharing a recent
+five_hour_resets_at / seven_day_resets_at so they fall in the same window. Also add a
+delete-test-room.js counterpart that deletes every row where account_email =
+'test-room@example.com', for cleanup. Print counts before/after so I can confirm.
+```
+
+Run `node scripts/seed-test-room.js`, then view `test-room@example.com` via the admin
+page (Phase 9) once it exists — or temporarily point `/api/my-room` at it while testing
+Phase 8 in isolation. Run `delete-test-room.js` when done so it doesn't linger as a
+stray Room in `list_rooms()`.
+
 ### TEST
 
 - `pnpm install && pnpm dev` in `dashboard/`. Sign in with GitHub using the account whose
@@ -477,60 +520,108 @@ we'll verify that in the test.
 - Confirm slices across members roughly sum toward the account 5h % in the header.
 
 ### CHECKPOINT
+
 `git commit -am "Phase 8: Claude Room dashboard - GitHub login, Room-scoped owner view" && git tag v1.3-room-dashboard`
 
 ---
 
-# Phase 9 — Admin view (all Rooms)
+# Phase 9 — Admin page: separate login, list every Room, open any one
 
-**Goal:** an admin (your email, seeded in `admins`) can list every Room and open any one
-of them, seeing exactly what that Room's owner sees.
+**Goal:** a dedicated `/admin` page, with its own Supabase email/password login (not
+GitHub), where an admin lists every Room and opens any one of them, seeing exactly what
+that Room's owner would see on `/`.
 
 ### Simpler notes
 
-- Reuse everything from Phase 8. The admin path is the *same* Room view, just allowed to
-  target a Room email other than their own — and **only** because the server route
-  confirmed they're an admin first.
-- The admin is the *one* place a Room email is allowed to come from the client (a
-  `?room=` param) — and it's gated by the `admins` check server-side.
+- **Why a different login method here, and not GitHub:** GitHub-plus-email-match exists
+  to answer "does this person genuinely control the Claude account this Room is named
+  after?" — the right question for an *owner*, who has no other credential. An admin
+  isn't proving they own any particular Room; they're a small, fixed set of known
+  operators (you). A plain Supabase email/password account is the right tool for that —
+  simpler, and it doesn't force an admin's personal GitHub email to match anything.
+- **`/admin` is a fully separate page and route tree from `/`.** Different login screen,
+  different session check, no shared "Admin badge" logic living inside the owner page.
+  An owner visiting `/` never sees any hint that `/admin` exists.
+- **Create the admin login in Supabase first** (do this once, outside any prompt):
+  Supabase Dashboard → **Authentication → Users → Add User** → enter your email
+  (`ashfaqevp@gmail.com`) and a password → check **"Auto Confirm User"** so it doesn't
+  wait on an email you'd have to click. This is a real login credential, separate from
+  the `admins` table you seeded in Phase 7 — that table is *authorization* (who's allowed
+  through once logged in), this user is *authentication* (proving it's you). Make sure
+  the same email exists in both: if Phase 7 seeded a placeholder
+  (`rashid@iocod.com`), update it:
+  ```sql
+  insert into public.admins (email) values ('ashfaqevp@gmail.com')
+  on conflict (email) do nothing;
+  ```
+- The admin route is the *one* place a Room email is allowed to come from the client (an
+  `?email=` param) — and it's only ever trusted after the server independently confirms
+  the logged-in session's email is in `admins`. The client cannot self-declare adminhood.
 
 ### PROMPT (paste into Claude Code, pointing at dashboard/)
 
 ```
-Read ../CONTEXT.md. Phase 9 of Claude Room: add the admin view. Reuse the Phase 8 Room
-view exactly - an admin sees a Room identically to how its owner sees it. Do only Phase 9.
+Read ../CONTEXT.md. Phase 9 of Claude Room: build a SEPARATE /admin page with its own
+Supabase email/password login (NOT GitHub - that's for the owner page at / only). An
+admin lists every Room and can open any of them, reusing the same Room-view component
+the owner sees at /, but reached only via /admin. Do only Phase 9.
 
-1. Server route server/api/admin/rooms.get.ts (secret key, server-only): confirm the
-   authenticated user's verified email is in admins (else 403). Return list_rooms()
+I have already created a Supabase Auth user with email/password for myself
+(ashfaqevp@gmail.com) via the Supabase dashboard, and confirmed that email exists in
+the admins table. Assume that setup is done.
+
+1. pages/admin/login.vue: a plain email/password sign-in form using Supabase Auth's
+   password grant (NOT the GitHub OAuth flow used on /). On success, redirect to
+   /admin. On failure, show a clear error. This page and / must not share a login
+   component - keep them visually and structurally separate (this is a distinct
+   operator tool, not a variant of the owner page).
+
+2. Server route server/api/admin/rooms.get.ts (secret key, server-only): read the
+   authenticated session server-side, get its email, confirm it exists in admins
+   (else 403 - do not reveal whether the email exists, just 403). Return list_rooms()
    (claude_email, room_name, member_count, last_active, current 5h %).
 
-2. Extend the Room data fetch so an admin can target any Room:
-   - Add server/api/admin/room.get.ts that takes ?email=<room email>, confirms the
-     caller is an admin (403 otherwise), then returns the SAME combined payload
-     /api/my-room returns but for the requested email. Non-admins can NEVER reach this -
-     the admin check is server-side, before any data is read.
-   - The verified-session scoping for normal owners (/api/my-room) is unchanged; only
-     admins get the ?email path.
+3. Server route server/api/admin/room.get.ts: takes ?email=<room email>, re-confirms
+   the caller is an admin server-side (403 otherwise, checked independently on this
+   route too - do not rely on the client having passed the rooms.get.ts check
+   earlier), then returns the SAME combined payload /api/my-room (Phase 8) returns but
+   for the requested email. The requested email is ONLY ever trusted after the admin
+   check passes.
 
-3. UI: if the logged-in user is an admin, show an "Admin" badge in the top bar and a
-   Room switcher (from /api/admin/rooms) - a list/table of all Rooms with member_count,
-   last_active, current 5h %. Selecting a Room renders the existing Room view for that
-   email (via /api/admin/room?email=...). A non-admin never sees any of this.
+4. pages/admin/index.vue (route: /admin): requires a valid admin session (redirect to
+   /admin/login if not authenticated or not in admins). Shows:
+   - A simple top bar: "Claude Room — Admin", signed-in admin email, sign out.
+   - A Room switcher: a table/list from /api/admin/rooms (Room name or email,
+     member_count, last_active, current 5h %), sorted by last_active.
+   - Selecting a Room renders the SAME Room-view component built in Phase 8 (Room
+     header, member grid, insights, daily table, empty state) fed by
+     /api/admin/room?email=..., so admin and owner see visually identical Room views.
 
-Reuse the Phase 8 components. Same secret-key-server-only rule.
+5. Keep / (the owner page) completely untouched - no admin link, badge, or mention
+   anywhere on it. The two are discovered only by URL.
+
+Reuse the Phase 8 Room-view component rather than rebuilding it. Same secret-key-
+server-only rule as every prior phase.
 ```
 
 ### TEST
 
-- Signed in as your admin email → confirm the "Admin" badge + Room switcher appear, list
-  all Rooms with stats, and selecting one renders that Room's full view (same as its
-  owner would see).
-- Signed in as a **non-admin** email → confirm no admin UI, and that hitting
-  `/api/admin/rooms` and `/api/admin/room?email=...` directly returns **403** (show it).
-- Repeat the Network-tab secret-key check.
+- Visit `/admin` logged out → redirected to `/admin/login`. Log in with
+  `ashfaqevp@gmail.com` → land on `/admin`, see the Room switcher listing every real
+  Room (including `rashid@iocod.com`, and `test-room@example.com` if you seeded it in
+  Phase 8) with sensible stats.
+- Select `rashid@iocod.com` → confirm it renders the full Room view with real synced
+  data, identical in layout to what an owner would see on `/`.
+- Select `test-room@example.com` (if seeded) → confirm the varied member states (active/
+  idle, near-limit colouring) render correctly — this is what the seed script was for.
+- Try hitting `/api/admin/rooms` and `/api/admin/room?email=rashid@iocod.com` directly
+  **without** being logged in as an admin → confirm both return **403** (show it).
+- Confirm `/` (owner page) shows no trace of `/admin` anywhere.
+- Repeat the Network-tab secret-key check on the `/admin` pages.
 
 ### CHECKPOINT
-`git commit -am "Phase 9: admin view - list all Rooms, open any Room as owner" && git tag v1.4-admin`
+
+`git commit -am "Phase 9: separate /admin page - email/password login, list & open any Room" && git tag v1.4-admin`
 
 ---
 
@@ -589,6 +680,7 @@ Null-safe throughout. No new data leaves the machine beyond what Phases 3/6 alre
   render from the local log.
 
 ### CHECKPOINT
+
 `git commit -am "Phase 10: Claude Room extension panel - modern, theme-aware, Room name" && git tag v1.5-room-extension`
 
 ---
