@@ -317,7 +317,7 @@ function panelStyles(): string {
   }
   .row { margin-bottom: 1em; }
   .row:last-child { margin-bottom: 0; }
-  .label { display: flex; justify-content: space-between; margin-bottom: 0.3em; font-size: 0.85em; }
+  .label { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.3em; font-size: 0.85em; }
   .label .pct { color: var(--vscode-descriptionForeground); }
   .bar-track {
     height: 8px;
@@ -348,13 +348,6 @@ function panelStyles(): string {
   }
   .stat-label { color: var(--vscode-descriptionForeground); font-size: 0.78em; }
   .stat-value { font-size: 1em; margin-top: 0.15em; font-weight: 500; }
-  .usage-visual-row {
-    display: flex;
-    align-items: center;
-    gap: 1.6em;
-    margin-bottom: 1.2em;
-    flex-wrap: wrap;
-  }
   .donut-wrap {
     display: flex;
     flex-direction: column;
@@ -372,40 +365,44 @@ function panelStyles(): string {
     font-family: var(--vscode-font-family);
     fill: var(--vscode-foreground);
   }
-  .pace {
+  .usage-columns {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1.4em;
+    flex-wrap: wrap;
+    margin-bottom: 1.1em;
+  }
+  .bars-col {
     flex: 1 1 220px;
     min-width: 200px;
   }
-  .pace-label {
+  .share-col {
+    flex: 0 0 auto;
     display: flex;
-    justify-content: space-between;
-    font-size: 0.85em;
-    margin-bottom: 0.35em;
+    align-items: center;
+    justify-content: center;
   }
-  .pace-label .pct { color: var(--vscode-descriptionForeground); }
-  .pace-track {
+  .bar-track-wrap {
     position: relative;
-    height: 10px;
-    border-radius: 5px;
-    background: rgba(128, 128, 128, 0.25);
-    overflow: visible;
   }
-  .pace-fill {
-    height: 100%;
-    border-radius: 5px;
-    background: var(--vscode-charts-blue, #3794ff);
-  }
-  .pace-marker {
+  .bar-tick {
     position: absolute;
     top: -3px;
     width: 2px;
-    height: 16px;
+    height: 14px;
     background: var(--vscode-charts-yellow, #cca700);
   }
-  .pace-status {
-    margin-top: 0.4em;
-    font-size: 0.85em;
-    font-weight: 500;
+  .pace-badge {
+    display: inline-block;
+    font-size: 0.72em;
+    font-weight: 600;
+    line-height: 1;
+    padding: 0.22em 0.6em;
+    border-radius: 999px;
+    margin-left: 0.5em;
+    vertical-align: middle;
+    background: color-mix(in srgb, currentColor 16%, transparent);
   }
   table { border-collapse: collapse; width: 100%; }
   th, td { text-align: left; padding: 0.35em 0.8em 0.35em 0; font-size: 0.85em; }
@@ -449,10 +446,10 @@ interface PaceStatus {
   percentUsed: number;
   percentElapsed: number;
   colorVar: string;
-  label: string;
+  verdict: string;
 }
 
-/** How far into the current 5h window we are vs. how much of the account's 5h limit is used. Null (hides the element) when there's no known window yet. */
+/** How far into the current 5h window we are vs. how much of the account's 5h limit is used. Null (hides the tick/legend) when there's no known window yet. */
 function computePaceStatus(summary: ReturnType<typeof summarizeCurrentWindow>): PaceStatus | null {
   const { accountFiveHourPct, windowStart, windowEnd } = summary;
   if (accountFiveHourPct == null || windowStart == null || windowEnd == null) return null;
@@ -463,12 +460,14 @@ function computePaceStatus(summary: ReturnType<typeof summarizeCurrentWindow>): 
   const percentUsed = accountFiveHourPct;
   const margin = 5;
 
+  // Traffic-light severity: ahead of pace (heading toward the limit before reset) is
+  // the most concerning state, on pace is a middle caution, within pace is safest.
   if (percentUsed > percentElapsed + margin) {
     return {
       percentUsed,
       percentElapsed,
-      colorVar: 'var(--vscode-charts-orange, #d18616)',
-      label: 'Ahead of pace — trending toward the 5h limit before reset',
+      colorVar: 'var(--vscode-charts-red, #f14c4c)',
+      verdict: 'ahead of pace',
     };
   }
   if (percentUsed < percentElapsed - margin) {
@@ -476,31 +475,58 @@ function computePaceStatus(summary: ReturnType<typeof summarizeCurrentWindow>): 
       percentUsed,
       percentElapsed,
       colorVar: 'var(--vscode-charts-green, #89d185)',
-      label: 'Within pace — comfortable',
+      verdict: 'within pace',
     };
   }
   return {
     percentUsed,
     percentElapsed,
-    colorVar: 'var(--vscode-descriptionForeground)',
-    label: 'On pace',
+    colorVar: 'var(--vscode-charts-yellow, #cca700)',
+    verdict: 'on pace',
   };
 }
 
-function renderPaceIndicator(summary: ReturnType<typeof summarizeCurrentWindow>): string {
+/**
+ * The team's 5h usage bar: same track/fill style as the 7d bar below it, plus an amber
+ * tick marking how far through the window we are and a one-word verdict badge next to
+ * the label. The tick/badge are omitted (bar still renders) when computePaceStatus
+ * can't be computed.
+ */
+function renderFiveHourBar(summary: ReturnType<typeof summarizeCurrentWindow>): string {
+  const pct = summary.accountFiveHourPct;
+  const clamped = typeof pct === 'number' ? Math.max(0, Math.min(100, pct)) : 0;
   const pace = computePaceStatus(summary);
-  if (!pace) return '';
-  const cappedUsed = Math.max(0, Math.min(100, pace.percentUsed));
-  const cappedElapsed = Math.max(0, Math.min(100, pace.percentElapsed));
+
+  const tickHtml = pace
+    ? `<div class="bar-tick" style="left:${Math.max(0, Math.min(100, pace.percentElapsed))}%;"></div>`
+    : '';
+
+  const badgeHtml = pace
+    ? `<span class="pace-badge" style="color:${pace.colorVar};">${escapeHtml(pace.verdict)}</span>`
+    : '';
 
   return `
-    <div class="pace">
-      <div class="pace-label"><span>Usage pace</span><span class="pct">${formatPct(pace.percentUsed)} used · ${formatPct(pace.percentElapsed)} elapsed</span></div>
-      <div class="pace-track">
-        <div class="pace-fill" style="width:${cappedUsed}%;"></div>
-        <div class="pace-marker" style="left:${cappedElapsed}%;"></div>
+    <div class="row">
+      <div class="label"><span>Team's 5h usage${badgeHtml}</span><span class="pct">${formatPct(pct)}</span></div>
+      <div class="bar-track-wrap">
+        <div class="bar-track">
+          <div class="bar-fill" style="width:${clamped}%;background:var(--vscode-charts-blue, #3794ff);"></div>
+        </div>
+        ${tickHtml}
       </div>
-      <div class="pace-status" style="color:${pace.colorVar};">${escapeHtml(pace.label)}</div>
+      <div class="countdown">Resets in ${formatCountdown(summary.fiveHourResetsAt)}</div>
+    </div>`;
+}
+
+/** This member's pure cost share of the team's window_cost (teamSlice.mySharePct — distinct from myPct, which is scaled by the account 5h% for the anchor sentence). Neutral empty state when there's no team data to share against (also covers team window_cost === 0, which is exactly when fetchTeamSlice returns null). */
+function renderShareSection(teamSlice: TeamSlice | null): string {
+  if (!teamSlice) {
+    return `<div class="donut-wrap"><div class="empty">No usage yet this window</div></div>`;
+  }
+  return `
+    <div class="donut-wrap">
+      ${renderDonut(teamSlice.mySharePct)}
+      <div class="donut-caption">Your share</div>
     </div>`;
 }
 
@@ -535,14 +561,13 @@ function renderHtml(args: {
           ? `<div class="slice-line">${escapeHtml(teamSliceLine(teamSlice))}</div>`
           : `<div class="slice-line empty">Team comparison unavailable — showing this device's own usage only.</div>`
       }
-      <div class="usage-visual-row">
-        <div class="donut-wrap">
-          ${renderDonut(summary.accountFiveHourPct)}
-          <div class="donut-caption">Account 5h usage</div>
+      <div class="usage-columns">
+        <div class="bars-col">
+          ${renderFiveHourBar(summary)}
+          ${bar(summary.accountSevenDayPct, summary.sevenDayResetsAt, 'var(--vscode-charts-purple, #b180d7)', "Team's 7d usage")}
         </div>
-        ${renderPaceIndicator(summary)}
+        <div class="share-col">${renderShareSection(teamSlice)}</div>
       </div>
-      ${bar(summary.accountSevenDayPct, summary.sevenDayResetsAt, 'var(--vscode-charts-purple, #b180d7)', 'Account 7d usage')}
       <div class="stat-grid">
         <div class="stat-card"><div class="stat-label">Your cost this window</div><div class="stat-value">${formatUsd(summary.windowCostUsd)}</div></div>
         <div class="stat-card"><div class="stat-label">Your tokens</div><div class="stat-value">${summary.windowInputTokens.toLocaleString()} in / ${summary.windowOutputTokens.toLocaleString()} out</div></div>

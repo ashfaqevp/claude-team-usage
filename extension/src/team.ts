@@ -15,6 +15,7 @@ interface TeamWindowRow {
 
 export interface TeamSlice {
   myPct: number;
+  mySharePct: number;
   accountFiveHourPct: number;
   accountSevenDayPct: number | null;
 }
@@ -41,6 +42,10 @@ export async function fetchTeamSlice(url: string, anonKey: string, myUserName: s
 
   return {
     myPct: (myCost / totalCost) * accountFiveHourPct,
+    // Pure cost share (my window_cost / team window_cost) * 100 — distinct from myPct,
+    // which scales that same ratio by the account 5h% for the "you ≈ X% of the shared
+    // 5h limit" sentence. The two coincide only when there's a single active member.
+    mySharePct: (myCost / totalCost) * 100,
     accountFiveHourPct,
     accountSevenDayPct,
   };

@@ -7,7 +7,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Pencil, Inbox, Flame, Users, TrendingUp, CalendarClock } from '@lucide/vue'
+import { Pencil, Inbox, Users, History } from 'lucide-vue-next'
+import { assignMemberColors, SERIES_HEX } from '@/lib/chartColors'
 
 const props = withDefaults(defineProps<{ data: MyRoomResponse, allowRename?: boolean }>(), {
   allowRename: true,
@@ -34,24 +35,20 @@ const totalWindowCost = computed(() =>
   props.data.roomWindowSummary.reduce((sum, r) => sum + num(r.window_cost_usd), 0)
 )
 
-type Level = 'cool' | 'amber' | 'red'
+// One fixed color per member, by name (alphabetical), never by usage - so a
+// member's color never shifts with how much they've used. Shared across the
+// donut, the timeline, and each member card's accent so the same person reads as
+// the same color everywhere on the page.
+const memberColorMap = computed(() => {
+  const names = new Set<string>()
+  for (const r of props.data.roomWindowSummary) names.add(r.user_name)
+  for (const r of props.data.latestPerUser) names.add(r.user_name)
+  for (const r of props.data.dailyUsage) names.add(r.user_name)
+  return assignMemberColors(names)
+})
 
-function sliceLevel(pct: number): Level {
-  if (pct >= 30) return 'red'
-  if (pct >= 15) return 'amber'
-  return 'cool'
-}
-
-const levelBorderClass: Record<Level, string> = {
-  cool: 'border-l-sky-500',
-  amber: 'border-l-amber-500',
-  red: 'border-l-red-500',
-}
-
-const levelBadgeClass: Record<Level, string> = {
-  cool: 'bg-sky-500/10 text-sky-600 dark:text-sky-400',
-  amber: 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
-  red: 'bg-red-500/10 text-red-600 dark:text-red-400',
+function colorFor(userName: string) {
+  return memberColorMap.value.get(userName) ?? { hex: SERIES_HEX[0], css: 'var(--series-1)' }
 }
 
 function isActive(recordedAt: string | null | undefined) {
@@ -99,6 +96,11 @@ function formatDay(day: string) {
   })
 }
 
+// Neutral status cards, one per member - sorted by name (not by usage), so the
+// grid never reads as a leaderboard. "Slice" here is this member's estimated
+// share of the account-wide 5h limit, which is a different number from the donut's
+// share of this window's usage - labelled explicitly on the card to avoid the two
+// percentages looking like a contradiction.
 const memberCards = computed(() => {
   const summaryByUser = new Map(props.data.roomWindowSummary.map(r => [r.user_name, r]))
   const latestByUser = new Map(props.data.latestPerUser.map(r => [r.user_name, r]))
@@ -115,40 +117,22 @@ const memberCards = computed(() => {
         userName,
         windowCost,
         slice,
-        level: sliceLevel(slice),
+        color: colorFor(userName),
         model: latest?.model ?? '—',
-        inputTokens: num(latest?.input_tokens),
-        outputTokens: num(latest?.output_tokens),
+        // Null (not 0) when the last snapshot didn't report a context window, so
+        // the card can show "—" instead of a misleading "0 in / 0 out".
+        inputTokens: latest?.input_tokens == null ? null : num(latest.input_tokens),
+        outputTokens: latest?.output_tokens == null ? null : num(latest.output_tokens),
         recordedAt: latest?.recorded_at ?? null,
         active: isActive(latest?.recorded_at),
         idle: isIdle(latest?.recorded_at),
       }
     })
-    .sort((a, b) => b.slice - a.slice)
+    .sort((a, b) => a.userName.localeCompare(b.userName))
 })
 
-const topUser = computed(() => memberCards.value[0] ?? null)
-
-// Matches the Asia/Kolkata day bucketing daily_usage uses (see supabase/schema.sql),
-// so "today" lines up with the same calendar day the view attributes activity to.
-const todayKey = computed(() => {
-  if (now.value == null) return null
-  return new Date(now.value).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
-})
-
-const mostActiveToday = computed(() => {
-  if (!todayKey.value) return null
-  const todayRows = props.data.dailyUsage.filter(r => r.day === todayKey.value)
-  if (!todayRows.length) return null
-  return todayRows.reduce((best, r) => (num(r.session_count) > num(best.session_count) ? r : best))
-})
-
-const totalSessions = computed(() =>
-  props.data.dailyUsage.reduce((sum, r) => sum + num(r.session_count), 0)
-)
-
-// Room-wide daily rows: daily_usage carries one row per (day, user_name) — roll them
-// up to one row per day for the Room-level table the task asks for.
+// Room-wide daily rows: daily_usage carries one row per (day, user_name) — rolled
+// up to one row per day for the Room-level table and charts.
 const dailyRoomRows = computed(() => {
   const byDay = new Map<string, { day: string, peak5h: number, peak7d: number, cost: number, sessions: number }>()
   for (const row of props.data.dailyUsage) {
@@ -162,10 +146,46 @@ const dailyRoomRows = computed(() => {
   return Array.from(byDay.values()).sort((a, b) => (a.day < b.day ? 1 : -1))
 })
 
-const peakDay = computed(() => {
-  if (!dailyRoomRows.value.length) return null
-  return dailyRoomRows.value.reduce((best, r) => (r.cost > best.cost ? r : best))
+const chronologicalDays = computed(() => [...dailyRoomRows.value].reverse())
+
+const heatmapDays = computed(() =>
+  chronologicalDays.value.map(r => ({ day: r.day, label: formatDay(r.day), cost: r.cost }))
+)
+
+const dailyUsageByUserDay = computed(() => {
+  const map = new Map<string, Map<string, number>>()
+  for (const row of props.data.dailyUsage) {
+    if (!map.has(row.user_name)) map.set(row.user_name, new Map())
+    const userMap = map.get(row.user_name)!
+    userMap.set(row.day, (userMap.get(row.day) ?? 0) + num(row.total_cost_usd))
+  }
+  return map
 })
+
+const timelineLabels = computed(() => chronologicalDays.value.map(r => formatDay(r.day)))
+
+const timelineSeries = computed(() => {
+  const days = chronologicalDays.value.map(r => r.day)
+  return [...dailyUsageByUserDay.value.keys()]
+    .sort((a, b) => a.localeCompare(b))
+    .map((userName) => {
+      const perDay = dailyUsageByUserDay.value.get(userName)!
+      return {
+        userName,
+        colorHex: colorFor(userName).hex,
+        data: days.map(day => perDay.get(day) ?? 0),
+      }
+    })
+})
+
+const donutMembers = computed(() =>
+  props.data.roomWindowSummary.map(r => ({
+    userName: r.user_name,
+    cost: num(r.window_cost_usd),
+    colorHex: colorFor(r.user_name).hex,
+    colorCss: colorFor(r.user_name).css,
+  }))
+)
 
 const renameOpen = ref(false)
 const renameValue = ref('')
@@ -195,7 +215,7 @@ function submitRename() {
       <Button size="sm" @click="openRename">Name it</Button>
     </div>
 
-    <Card>
+    <Card class="shadow-sm">
       <CardHeader class="flex flex-row flex-wrap items-start justify-between gap-4">
         <div>
           <div class="flex items-center gap-1.5">
@@ -208,7 +228,10 @@ function submitRename() {
         </div>
         <div class="text-right">
           <div class="text-2xl font-semibold tabular-nums">{{ formatCost(totalWindowCost) }}</div>
-          <div class="text-xs text-muted-foreground">API-equivalent (Max plan — not real spend)</div>
+          <div class="flex items-center justify-end gap-1 text-xs text-muted-foreground">
+            API-equivalent (Max plan — not real spend)
+            <Icon name="lucide:info" class="size-3" title="This account is on a Max plan - these figures show what usage would have cost on API pricing, not real spend." />
+          </div>
         </div>
       </CardHeader>
       <CardContent class="grid gap-6 sm:grid-cols-2">
@@ -240,51 +263,19 @@ function submitRename() {
     </Card>
 
     <template v-else>
-      <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <Card>
-          <CardContent class="py-4">
-            <div class="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <TrendingUp class="size-3.5" /> Top user this window
-            </div>
-            <div class="mt-1 truncate text-lg font-semibold">{{ topUser?.userName ?? '—' }}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent class="py-4">
-            <div class="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Flame class="size-3.5" /> Most active today
-            </div>
-            <div class="mt-1 truncate text-lg font-semibold">{{ mostActiveToday?.user_name ?? '—' }}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent class="py-4">
-            <div class="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Users class="size-3.5" /> Total sessions
-            </div>
-            <div class="mt-1 text-lg font-semibold tabular-nums">{{ totalSessions }}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent class="py-4">
-            <div class="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <CalendarClock class="size-3.5" /> Peak day
-            </div>
-            <div class="mt-1 text-lg font-semibold">{{ peakDay ? formatDay(peakDay.day) : '—' }}</div>
-          </CardContent>
-        </Card>
-      </div>
-
       <div>
-        <h2 class="mb-3 text-sm font-medium text-muted-foreground">Members</h2>
+        <h2 class="mb-3 flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
+          <Users class="size-4" /> Members
+        </h2>
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <Card
             v-for="card in memberCards"
             :key="card.userName"
-            class="border-l-4 transition-opacity"
-            :class="[levelBorderClass[card.level], { 'opacity-50': card.idle }]"
+            class="rounded-lg border-l-4 py-4 shadow-sm transition-opacity"
+            :style="{ borderLeftColor: card.color.css }"
+            :class="{ 'opacity-50': card.idle }"
           >
-            <CardContent class="py-4">
+            <CardContent>
               <div class="flex items-start justify-between gap-2">
                 <div class="flex min-w-0 items-center gap-2">
                   <span
@@ -293,7 +284,12 @@ function submitRename() {
                   />
                   <span class="truncate font-medium">{{ card.userName }}</span>
                 </div>
-                <Badge :class="levelBadgeClass[card.level]">{{ formatPct(card.slice) }}</Badge>
+                <div class="text-right">
+                  <Badge variant="secondary" :title="`${formatPct(card.slice)} of the account's 5h limit`">
+                    {{ formatPct(card.slice) }}
+                  </Badge>
+                  <div class="mt-0.5 text-[10px] text-muted-foreground">of 5h limit</div>
+                </div>
               </div>
               <dl class="mt-3 space-y-1.5 text-sm">
                 <div class="flex justify-between">
@@ -301,8 +297,11 @@ function submitRename() {
                   <dd class="tabular-nums">{{ formatCost(card.windowCost) }}</dd>
                 </div>
                 <div class="flex justify-between">
-                  <dt class="text-muted-foreground">Tokens</dt>
-                  <dd class="tabular-nums">{{ card.inputTokens.toLocaleString() }} in / {{ card.outputTokens.toLocaleString() }} out</dd>
+                  <dt class="text-muted-foreground" title="Size of this member's most recent conversation context - not a total for the window">Context tokens</dt>
+                  <dd class="tabular-nums">
+                    <template v-if="card.inputTokens == null && card.outputTokens == null">—</template>
+                    <template v-else>{{ (card.inputTokens ?? 0).toLocaleString() }} in / {{ (card.outputTokens ?? 0).toLocaleString() }} out</template>
+                  </dd>
                 </div>
                 <div class="flex justify-between">
                   <dt class="text-muted-foreground">Model</dt>
@@ -318,9 +317,18 @@ function submitRename() {
         </div>
       </div>
 
+      <div class="grid gap-4 lg:grid-cols-2">
+        <ShareDonutCard :members="donutMembers" :total-cost="totalWindowCost" />
+        <ActivityHeatmapCard :days="heatmapDays" />
+      </div>
+
+      <UsageTimelineCard :labels="timelineLabels" :series="timelineSeries" />
+
       <div>
-        <h2 class="mb-3 text-sm font-medium text-muted-foreground">Daily activity</h2>
-        <Card class="overflow-hidden py-0">
+        <h2 class="mb-3 flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
+          <History class="size-4" /> Daily activity
+        </h2>
+        <Card class="overflow-hidden py-0 shadow-sm">
           <div class="overflow-x-auto">
             <Table>
               <TableHeader>
