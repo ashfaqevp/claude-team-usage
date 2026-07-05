@@ -11,6 +11,7 @@ number.
 **Live dashboard:** [claude-room.vercel.app](https://claude-room.vercel.app/)
 
 <!-- SCREENSHOT: the Room owner's dashboard (dashboard.vue / RoomView.vue) - header with 5h/7d bars, member grid with per-member slices, insights strip, daily activity table -->
+
 ![Claude Room owner dashboard](docs/screenshots/dashboard-overview.png)
 
 ## The problem
@@ -41,6 +42,7 @@ the account's shared limits, tracked over time.
    Supabase **secret** key lives server-side only and never reaches the browser.
 
 <!-- SCREENSHOT: the VS Code extension's status bar item and "Claude Room" webview panel showing a member's own 5h/7d bars, slice, and recent activity -->
+
 ![Claude Room extension panel](docs/screenshots/extension-panel.png)
 
 ## What data is collected
@@ -99,11 +101,11 @@ claude-team-usage/
 
 All optional — configure only if you want to override a default.
 
-| Setting | Default | Purpose |
-|---|---|---|
-| `claudeUsage.supabaseUrl` | shared Room's project URL | Where snapshots sync to. Empty disables sync. |
-| `claudeUsage.supabaseAnonKey` | shared Room's publishable key | Insert-only, aggregates-only key. Empty disables sync. |
-| `claudeUsage.userNameOverride` | *(empty)* | Label shown in shared usage data. Leave empty to auto-derive from your git identity (or a generated device id if git isn't configured). |
+| Setting                          | Default                       | Purpose                                                                                                                                 |
+| -------------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `claudeUsage.supabaseUrl`      | shared Room's project URL     | Where snapshots sync to. Empty disables sync.                                                                                           |
+| `claudeUsage.supabaseAnonKey`  | shared Room's publishable key | Insert-only, aggregates-only key. Empty disables sync.                                                                                  |
+| `claudeUsage.userNameOverride` | *(empty)*                   | Label shown in shared usage data. Leave empty to auto-derive from your git identity (or a generated device id if git isn't configured). |
 
 More detail on identity resolution and sync behavior: [extension/README.md](extension/README.md).
 
@@ -119,11 +121,13 @@ pnpm install
 ```
 
 Create `dashboard/.env` (gitignored) with:
+
 ```
 SUPABASE_URL=...
 SUPABASE_SECRET_KEY=...
 SUPABASE_PUBLISHABLE_KEY=...
 ```
+
 `SUPABASE_SECRET_KEY` is read only in server-side routes (`server/api/*.ts`) via
 Nitro's `runtimeConfig` — it is never sent to the browser.
 `SUPABASE_PUBLISHABLE_KEY` is used client-side only for the GitHub sign-in flow.
@@ -140,6 +144,7 @@ prerequisite; see [dashboard/CLAUDE.md](dashboard/CLAUDE.md) for the full
 architecture and auth flow.
 
 <!-- SCREENSHOT: dashboard sign-in screen (SignInScreen.vue) prompting GitHub login -->
+
 ![Claude Room dashboard sign-in](docs/screenshots/dashboard-signin.png)
 
 ## Build the .vsix from source
@@ -195,6 +200,7 @@ open any Room.
 
 Documented, deliberately deferred items (see the build guide's "Future hardening"
 section):
+
 - Authenticated, Room-scoped inserts — writes are currently insert-only via a
   shared publishable key, acceptable for internal use but not access-controlled.
 - A Google (or other provider) login option alongside GitHub.
@@ -213,14 +219,3 @@ source of truth on what's actually shipped.
 ## License
 
 TODO — no LICENSE file exists in this repo yet.
-
----
-
-## Screenshots to add
-
-- `docs/screenshots/dashboard-overview.png` — the Room owner's dashboard: header
-  with 5h/7d bars + reset countdowns, member grid (slice/cost/tokens/model/last-seen),
-  insights strip, daily activity table.
-- `docs/screenshots/extension-panel.png` — the VS Code status bar item plus the
-  "Claude Room" webview panel (5h/7d bars, your slice, recent activity).
-- `docs/screenshots/dashboard-signin.png` — the dashboard's GitHub sign-in screen.
