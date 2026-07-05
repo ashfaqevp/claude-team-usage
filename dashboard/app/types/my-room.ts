@@ -1,6 +1,8 @@
 export interface RoomWindowSummaryRow {
   user_name: string
   window_cost_usd: number | string
+  window_input_tokens: number | string
+  window_output_tokens: number | string
   account_five_hour_pct: number | string | null
   account_seven_day_pct: number | string | null
   five_hour_resets_at: string | null
@@ -17,6 +19,16 @@ export interface LatestPerUserRow {
   seven_day_pct: number | string | null
   five_hour_resets_at: string | null
   seven_day_resets_at: string | null
+}
+
+// Concept B (per-session context-window fullness) — one row per session_id, NOT
+// reduced to one-per-user like LatestPerUserRow. Deliberately never summed/averaged
+// across a member's sessions; see RoomView.vue's per-session rendering.
+export interface SessionContextRow {
+  user_name: string
+  session_id: string
+  context_used_pct: number | string | null
+  recorded_at: string | null
 }
 
 export interface DailyUsageRow {
@@ -40,5 +52,6 @@ export interface MyRoomResponse {
   }
   roomWindowSummary: RoomWindowSummaryRow[]
   latestPerUser: LatestPerUserRow[]
+  sessionContexts: SessionContextRow[]
   dailyUsage: DailyUsageRow[]
 }

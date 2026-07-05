@@ -60,6 +60,7 @@ function mapToRow(parsed: unknown, userName: string, machine: string): Record<st
     model: str(p.model),
     input_tokens: num(p.total_input_tokens),
     output_tokens: num(p.total_output_tokens),
+    context_used_pct: num(p.context_used_pct),
     recorded_at: recordedAt,
   };
 }

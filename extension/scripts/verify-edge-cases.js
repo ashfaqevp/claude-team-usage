@@ -5,7 +5,7 @@
 // re-breaking the specific cases already written up there.
 
 const assert = require('assert');
-const { sessionCostDeltas, summarizeCurrentWindow, dailyPeaks } = require('../out/usage');
+const { sessionCostDeltas, sessionTokenDeltas, summarizeCurrentWindow, dailyPeaks } = require('../out/usage');
 
 let passed = 0;
 
@@ -33,12 +33,17 @@ function snap(overrides) {
     model: null,
     total_input_tokens: null,
     total_output_tokens: null,
+    context_used_pct: null,
     ...overrides,
   };
 }
 
 function sumCost(events) {
   return events.reduce((acc, e) => acc + e.costDelta, 0);
+}
+
+function sumInputTokens(events) {
+  return events.reduce((acc, e) => acc + e.inputTokenDelta, 0);
 }
 
 // DATA_SOURCES.md edge case 1: resume-bug dip must not clamp to the running max.
@@ -134,6 +139,88 @@ check('daily bucketing uses the fixed Asia/Kolkata timezone', () => {
   const peaks = dailyPeaks(snapshots);
   const day = peaks.find((p) => p.costUsd > 0);
   assert.strictEqual(day.date, '2026-01-02');
+});
+
+// Edge case 13a: token accounting must be delta-based, like cost, and not merely
+// "latest snapshot's cumulative total" - two interleaved sessions with raw cumulative
+// input-token readings must sum to the TRUE combined delta total, not whichever
+// session's latest snapshot happened to render last.
+// Session A: [1000, 1000, 2500] (deltas: 1000, 0, 1500 -> total 2500)
+// Session B: [500, 1800] (deltas: 500, 1300 -> total 1800)
+// True combined total: 2500 + 1800 = 4300.
+check('edge case 13a: multi-session token deltas sum to the true combined total, not a latest-snapshot overwrite', () => {
+  const resetsAtSec = Math.floor(Date.UTC(2026, 0, 1, 5, 0, 0) / 1000);
+  const snapshots = [
+    snap({ ts: new Date(Date.UTC(2026, 0, 1, 0, 0, 0)).toISOString(), session_id: 'A', total_input_tokens: 1000 }),
+    snap({ ts: new Date(Date.UTC(2026, 0, 1, 0, 1, 0)).toISOString(), session_id: 'B', total_input_tokens: 500 }),
+    snap({ ts: new Date(Date.UTC(2026, 0, 1, 0, 2, 0)).toISOString(), session_id: 'A', total_input_tokens: 1000 }),
+    snap({
+      ts: new Date(Date.UTC(2026, 0, 1, 0, 3, 0)).toISOString(),
+      session_id: 'B',
+      total_input_tokens: 1800,
+      five_hour_pct: 20,
+      five_hour_resets_at: resetsAtSec,
+    }),
+    snap({ ts: new Date(Date.UTC(2026, 0, 1, 0, 4, 0)).toISOString(), session_id: 'A', total_input_tokens: 2500 }),
+  ];
+  const events = sessionTokenDeltas(snapshots);
+  const total = sumInputTokens(events);
+  console.log(`  sessionTokenDeltas() events: ${JSON.stringify(events)}`);
+  console.log(`  TOTAL_INPUT_TOKENS = ${total} (expected 4300)`);
+  assert.strictEqual(total, 4300);
+
+  const summary = summarizeCurrentWindow(snapshots);
+  console.log(`  summarizeCurrentWindow().windowInputTokens = ${summary.windowInputTokens} (expected 4300)`);
+  assert.strictEqual(summary.windowInputTokens, 4300);
+});
+
+// Edge case 13b: a session that started before the current window opened must only
+// contribute its in-window token delta, not its full cumulative total - same style of
+// test as edge case 2's cost example, adapted to tokens. 1000 tokens accrue before the
+// window opens, 400 more accrue inside it: the window must report 400, never 1400.
+check('edge case 13b: window-spanning session only contributes its in-window token delta', () => {
+  const windowEndSec = Math.floor(Date.UTC(2026, 0, 1, 10, 0, 0) / 1000);
+  const beforeWindow = new Date(Date.UTC(2026, 0, 1, 4, 0, 0)).toISOString(); // > 5h before end
+  const insideWindow = new Date(Date.UTC(2026, 0, 1, 9, 0, 0)).toISOString();
+
+  const snapshots = [
+    snap({ ts: beforeWindow, session_id: 's1', total_input_tokens: 1000 }),
+    snap({
+      ts: insideWindow,
+      session_id: 's1',
+      total_input_tokens: 1400,
+      five_hour_pct: 42,
+      five_hour_resets_at: windowEndSec,
+    }),
+  ];
+
+  const summary = summarizeCurrentWindow(snapshots);
+  console.log(`  BEFORE: raw cumulative readings 1000 (pre-window) -> 1400 (in-window)`);
+  console.log(`  AFTER: summarizeCurrentWindow().windowInputTokens = ${summary.windowInputTokens} (expected 400, not 1400)`);
+  assert.strictEqual(summary.windowInputTokens, 400);
+});
+
+// Edge case 13c: per-session context usage must be shown per-session, never summed or
+// overwritten, when a member has two active sessions with different used_percentage.
+check('edge case 13c: per-session context usage shown separately for two active sessions, not summed', () => {
+  const resetsAtSec = Math.floor(Date.UTC(2026, 0, 1, 5, 0, 0) / 1000);
+  const snapshots = [
+    snap({ ts: new Date(Date.UTC(2026, 0, 1, 0, 0, 0)).toISOString(), session_id: 'abc123de', cost_usd: 1, context_used_pct: 62 }),
+    snap({
+      ts: new Date(Date.UTC(2026, 0, 1, 0, 1, 0)).toISOString(),
+      session_id: 'def456gh',
+      cost_usd: 1,
+      context_used_pct: 12,
+      five_hour_pct: 5,
+      five_hour_resets_at: resetsAtSec,
+    }),
+  ];
+  const summary = summarizeCurrentWindow(snapshots);
+  const byId = Object.fromEntries(summary.sessionContexts.map((sc) => [sc.sessionId, sc.contextUsedPct]));
+  console.log(`  sessionContexts = ${JSON.stringify(summary.sessionContexts)}`);
+  assert.strictEqual(summary.sessionContexts.length, 2);
+  assert.strictEqual(byId['abc123de'], 62);
+  assert.strictEqual(byId['def456gh'], 12);
 });
 
 console.log(`\n${passed} passed`);

@@ -19,8 +19,8 @@ is the only thing that persists any of it (to `~/.claude/team-usage/local-log.js
 | `session_id`                                                  | grouping key for delta calculation      | one row per session per change; snapshots with a null `session_id` are excluded from cost/session-count math (see edge case 8)  |
 | `model.display_name`                                          | shown in status bar / dashboard         | reflects the*most recent* model only — see "Model switching" below  |
 | `cost.total_cost_usd`                                         | the core usage number                   | cumulative for the session; we convert to a**delta** (see below) |
-| `context_window.used_percentage`                              | local "ctx %" display                   | per-conversation memory fullness — unrelated to the 5h/7d plan limit  |
-| `context_window.total_input_tokens` / `total_output_tokens` | raw token counts shown alongside cost   | informational only, not used in slice math                             |
+| `context_window.used_percentage`                              | local "ctx %" display, and (since edge case 13) `context_used_pct` on the persisted snapshot | per-conversation memory fullness — unrelated to the 5h/7d plan limit; per-session, never summed/averaged (see edge case 13) |
+| `context_window.total_input_tokens` / `total_output_tokens` | "Tokens this window" (delta-summed, like cost)   | cumulative for the session, exactly like `cost.total_cost_usd` — converted to a **delta** the same way (see edge case 13) |
 | `rate_limits.five_hour.used_percentage` + `resets_at`       | the real, official shared account total | identical on every machine at a given instant                          |
 | `rate_limits.seven_day.used_percentage` + `resets_at`       | same, for the weekly window             |                                                                        |
 
@@ -78,6 +78,23 @@ your_slice ≈ (your window_cost / everyone's window_cost) × account_five_hour_
 The total (`account_five_hour_pct`) is always exact — it comes straight from
 Anthropic. Only the *split between people* is an estimate, because Anthropic
 doesn't expose a true per-Room-member breakdown on a shared account.
+
+**Tokens are delta-based too, by the identical mechanism — but as a SEPARATE
+function, not folded into the cost delta.** `context_window.total_input_tokens` /
+`total_output_tokens` are cumulative per session, exactly like `cost.total_cost_usd`,
+so they need the same `max(0, new - previous)` treatment, the same per-snapshot
+event/window-attribution shape, and the same resume-bug clamp. This is
+`sessionTokenDeltas()` in the extension and `session_token_deltas()` in Supabase —
+deliberately parallel to, not merged with, `sessionCostDeltas()` /
+`session_cost_deltas()`, so the two can be verified independently and never silently
+drift into depending on each other's edge-case handling. See edge case 13.
+
+**Context-window usage (`context_window.used_percentage`) is a different kind of
+number and is NOT delta'd or windowed at all.** It's a per-conversation memory-fullness
+gauge, not a volume metric — summing or averaging it across a member's sessions would
+be meaningless. Displayed as "Context usage" per currently-active session_id (using
+that session's most recent known reading), never blended into one figure. See edge
+case 13.
 
 ---
 
@@ -262,3 +279,89 @@ doesn't expose a true per-Room-member breakdown on a shared account.
     and re-applied live to the `htrxdxtbrkdabrrqbpyr` project via migration
     `session_cost_deltas_tiebreak_by_id` — confirmed live by reading back
     `pg_get_functiondef()` and matching on the new `order by` clause.
+13. **Token accounting was never delta-based.** *Fixed — verified 2026-07-05.*
+    `context_window.total_input_tokens` / `total_output_tokens` are cumulative per
+    session, exactly like `cost.total_cost_usd` — but unlike cost, they were only ever
+    read as the latest snapshot's raw cumulative value, never delta'd. This was wrong
+    in two independent ways: (a) a member with more than one active session (two
+    terminal tabs) had whichever session rendered most recently silently overwrite the
+    token numbers from the other, instead of both being summed — this never happened
+    to cost, since cost already went through the delta engine; (b) even with one
+    session, "latest snapshot's cumulative total" answers a different question than
+    "tokens consumed this window" — a session that started before the current window
+    opened would have its pre-window tokens incorrectly folded into the window figure,
+    the same mistake edge case 2 already fixed for cost.
+
+    Fixed by mirroring the cost-delta architecture for tokens as a **separate,
+    parallel** function, not blended into the cost delta function (kept independently
+    verifiable, per edge case 3's warning about drift between two implementations of
+    the same idea): `sessionTokenDeltas()` in `extension/src/usage.ts` (alongside the
+    now cost-only `sessionCostDeltas()`) and `public.session_token_deltas()` in
+    `supabase/schema.sql` (alongside `session_cost_deltas()`). Both apply the identical
+    `max(0, current - previous)` per-session, per-snapshot treatment, the same
+    null-`session_id` exclusion, and the same malformed-timestamp exclusion as the cost
+    side. `get_team_window_summary()` / `get_room_window_summary()` were recreated
+    (DROP + CREATE, since adding output columns changes a function's return shape —
+    `CREATE OR REPLACE` alone rejects that) to also return `window_input_tokens` /
+    `window_output_tokens`, summed from `session_token_deltas()` filtered by the same
+    `window_bounds` already used for cost. This is a genuinely separate aggregation
+    from the cost sum, not a join against `session_cost_deltas()` — a snapshot can
+    carry tokens without cost (or vice versa), and the two delta functions
+    independently decide which rows they emit.
+
+    One further subtlety inside `session_token_deltas()` itself: `input_token_delta`
+    and `output_token_delta` are each computed from their own filtered `lag()` window
+    (rows where that specific field is non-null), not one shared window over every
+    `session_id`-not-null row. A shared window would let a stray null-token snapshot
+    act as a false "previous reading" of null for the next real reading, making that
+    next reading look like a fresh session start (its full cumulative value counted,
+    not the true delta since the last real reading) — filtering nulls out of each
+    field's own window first (matching `session_cost_deltas()`'s own `where cost_usd is
+    not null` pattern) means `lag()` always skips straight back to the last real
+    reading, matching the extension's `sessionTokenDeltas()`, which only updates its
+    "previous value" tracker on snapshots that actually carry a numeric reading for
+    that field. Verified live: readings `1000 -> (null) -> 1400` for one session
+    produced deltas `1000, 0, 400` (true total 1400), not `1000, 1400` (which would
+    double-count across the gap).
+
+    Separately, added a genuinely different concept that didn't exist before at all:
+    **per-session context usage.** `context_window.used_percentage` is a
+    per-conversation memory-fullness gauge, not a volume metric — it must never be
+    summed or averaged across a member's sessions, unlike cost/tokens. Persisted as a
+    new `context_used_pct` column (extension: `Snapshot.context_used_pct`, logged by
+    `usage-logger.js`, synced by `sync.ts`; Supabase: `usage_snapshots.context_used_pct`)
+    and surfaced as a small per-session list — "Session abc123: 62% context" — rather
+    than one blended number, in the status-bar tooltip, the "Show my usage" webview
+    panel, and the dashboard member card (labeled "Context usage", replacing the old
+    "Context tokens" label that displayed the latest snapshot's cumulative token counts
+    and read as if it were a volume metric).
+
+    **Verified 2026-07-05, extension side** (`npm test` in `extension/`, added to
+    `scripts/verify-edge-cases.js`):
+    - Multi-session case: session A raw readings `[1000, 1000, 2500]`, session B raw
+      readings `[500, 1800]`, interleaved in the same window. `sessionTokenDeltas()`
+      produced deltas `1000, 0, 1500` (A) and `500, 1300` (B);
+      `summarizeCurrentWindow().windowInputTokens` = **4300** — the true combined total
+      (2500 + 1800), not whichever session's latest snapshot rendered last.
+    - Window-spanning case: one session with a reading of 1000 tokens before the
+      current window opened and 1400 (cumulative) inside it —
+      `summarizeCurrentWindow().windowInputTokens` = **400**, not 1400.
+    - Per-session context case: two sessions with `context_used_pct` 62 and 12 —
+      `summarizeCurrentWindow().sessionContexts` returned both entries separately
+      (`{sessionId: 'abc123de', contextUsedPct: 62}`, `{sessionId: 'def456gh',
+      contextUsedPct: 12}`), never summed or overwritten.
+
+    **Verified 2026-07-05, Supabase side**, live against `htrxdxtbrkdabrrqbpyr` in
+    transactions rolled back afterward (not a reimplementation — the real
+    `session_token_deltas()` / `get_room_window_summary()` were queried directly): the
+    identical multi-session scenario above produced the identical events (`1000, 0,
+    1500` / `500, 1300`) and `get_room_window_summary()` returned
+    `window_input_tokens = 4300` — extension and Supabase agree on the same test case,
+    per edge case 3's standard. The identical window-spanning scenario (1000 pre-window,
+    1400 cumulative in-window) returned `window_input_tokens = 400`. The null-gap
+    subtlety above was verified separately: readings `1000 -> (null) -> 1400` produced
+    events `1000, 0, 400`. Real data was confirmed unaffected afterward: `select
+    count(*) from usage_snapshots` = 1777 rows, 0 leftover test rows, and a real query
+    (`get_room_window_summary('rashid@iocod.com')`) returned real non-zero figures
+    (`window_input_tokens = 1125163`, `window_output_tokens = 139701`) confirming the
+    recreated function still works end-to-end against live data.

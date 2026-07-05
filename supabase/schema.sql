@@ -461,3 +461,283 @@ $$;
 
 revoke all on function public.get_room_name(text) from public, authenticated;
 grant execute on function public.get_room_name(text) to anon;
+
+-- Phase 13 / edge case 13 (see DATA_SOURCES.md): token accounting was never
+-- delta-based, unlike cost — get_team_window_summary()/get_room_window_summary()
+-- returned each user's *latest snapshot's cumulative* total_input_tokens/
+-- total_output_tokens, which both double-counts across a member's multiple parallel
+-- sessions (whichever session's snapshot lands last silently overwrites the others)
+-- and mis-attributes a session's pre-window tokens into the current window, exactly
+-- the two bugs session_cost_deltas() was already built to avoid for cost. Applied
+-- directly to project htrxdxtbrkdabrrqbpyr via the Supabase MCP tool (migration
+-- `phase13_token_deltas_and_session_context`).
+
+alter table public.usage_snapshots
+  add column if not exists context_used_pct numeric;
+
+-- Token counterpart to session_cost_deltas(). Same shape (one row per snapshot, same
+-- sort key `(recorded_at, id)`, same null-session_id exclusion), kept as a SEPARATE
+-- function rather than folded into session_cost_deltas() so cost and token accounting
+-- stay two parallel, independently verifiable functions — identical reasoning to the
+-- extension's sessionCostDeltas()/sessionTokenDeltas() split in usage.ts.
+--
+-- input_token_delta and output_token_delta are each computed from their OWN filtered
+-- lag() window (rows where that specific field is non-null) rather than one shared
+-- window over all session_id-not-null rows. This matters: if a stray snapshot has a
+-- null input_tokens between two real readings, a shared window's lag() would see that
+-- null as "the previous reading" and wrongly treat the next real reading as a fresh
+-- session start (full value counted, not the true delta since the last real reading).
+-- Filtering nulls out of each field's own window first (matching session_cost_deltas()'s
+-- `where cost_usd is not null` pattern) means lag() always skips straight back to the
+-- last real reading for that field — exactly mirroring the extension's
+-- sessionTokenDeltas(), which only updates its "previous value" tracker on snapshots
+-- that actually carry a numeric reading for that field. Verified live: readings
+-- `1000 -> (null) -> 1400` produce deltas `1000, 0, 400` (sum 1400), not `1000, 1400`
+-- (which would double-count the gap).
+create or replace function public.session_token_deltas()
+returns table (
+  user_name text,
+  session_id text,
+  recorded_at timestamptz,
+  input_token_delta numeric,
+  output_token_delta numeric
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  anomaly record;
+begin
+  for anomaly in
+    select
+      s.session_id,
+      s.input_tokens as raw_input_tokens,
+      lag(s.input_tokens) over (partition by s.session_id order by s.recorded_at, s.id) as prior_input_tokens
+    from public.usage_snapshots s
+    where s.session_id is not null and s.input_tokens is not null
+  loop
+    if anomaly.prior_input_tokens is not null and anomaly.raw_input_tokens < anomaly.prior_input_tokens then
+      raise warning 'usage_snapshots session %: input_tokens dropped from % to % (known Claude Code resumed-session bug, github.com/anthropics/claude-code#13088) — ignoring the decrease',
+        anomaly.session_id, anomaly.prior_input_tokens, anomaly.raw_input_tokens;
+    end if;
+  end loop;
+
+  for anomaly in
+    select
+      s.session_id,
+      s.output_tokens as raw_output_tokens,
+      lag(s.output_tokens) over (partition by s.session_id order by s.recorded_at, s.id) as prior_output_tokens
+    from public.usage_snapshots s
+    where s.session_id is not null and s.output_tokens is not null
+  loop
+    if anomaly.prior_output_tokens is not null and anomaly.raw_output_tokens < anomaly.prior_output_tokens then
+      raise warning 'usage_snapshots session %: output_tokens dropped from % to % (known Claude Code resumed-session bug, github.com/anthropics/claude-code#13088) — ignoring the decrease',
+        anomaly.session_id, anomaly.prior_output_tokens, anomaly.raw_output_tokens;
+    end if;
+  end loop;
+
+  return query
+  with input_deltas as (
+    select
+      s.id,
+      case
+        when lag(s.input_tokens) over (partition by s.session_id order by s.recorded_at, s.id) is null
+          then s.input_tokens
+        else greatest(
+          s.input_tokens - lag(s.input_tokens) over (partition by s.session_id order by s.recorded_at, s.id),
+          0
+        )
+      end as input_token_delta
+    from public.usage_snapshots s
+    where s.session_id is not null and s.input_tokens is not null
+  ),
+  output_deltas as (
+    select
+      s.id,
+      case
+        when lag(s.output_tokens) over (partition by s.session_id order by s.recorded_at, s.id) is null
+          then s.output_tokens
+        else greatest(
+          s.output_tokens - lag(s.output_tokens) over (partition by s.session_id order by s.recorded_at, s.id),
+          0
+        )
+      end as output_token_delta
+    from public.usage_snapshots s
+    where s.session_id is not null and s.output_tokens is not null
+  )
+  select
+    s.user_name,
+    s.session_id,
+    s.recorded_at,
+    coalesce(id_.input_token_delta, 0) as input_token_delta,
+    coalesce(od.output_token_delta, 0) as output_token_delta
+  from public.usage_snapshots s
+  left join input_deltas id_ on id_.id = s.id
+  left join output_deltas od on od.id = s.id
+  where s.session_id is not null;
+end;
+$$;
+
+revoke all on function public.session_token_deltas() from public, anon, authenticated;
+
+-- get_team_window_summary() and get_room_window_summary(text) now also return
+-- window_input_tokens/window_output_tokens, summed from session_token_deltas() filtered
+-- by the same window_bounds already used for cost — a separate aggregation, not a join
+-- against session_cost_deltas(), since a snapshot can carry tokens without cost (or vice
+-- versa) and the two delta functions independently decide which rows they emit for.
+-- Adding output columns requires DROP + CREATE (CREATE OR REPLACE cannot change a
+-- function's return shape) — grants are re-issued below since DROP revokes them.
+drop function if exists public.get_team_window_summary();
+
+create function public.get_team_window_summary()
+returns table (
+  user_name text,
+  window_cost_usd numeric,
+  window_input_tokens numeric,
+  window_output_tokens numeric,
+  account_five_hour_pct numeric,
+  account_seven_day_pct numeric,
+  five_hour_resets_at timestamptz,
+  seven_day_resets_at timestamptz
+)
+language sql
+security definer
+set search_path = public
+as $$
+  with latest_rate_limits as (
+    select five_hour_pct, seven_day_pct, five_hour_resets_at, seven_day_resets_at
+    from public.usage_snapshots
+    where five_hour_pct is not null or seven_day_pct is not null
+    order by recorded_at desc
+    limit 1
+  ),
+  window_bounds as (
+    select
+      five_hour_resets_at - interval '5 hours' as window_start,
+      five_hour_resets_at as window_end
+    from latest_rate_limits
+    where five_hour_resets_at is not null
+  ),
+  cost_by_user as (
+    select scd.user_name, sum(coalesce(scd.cost_delta, 0)) as window_cost_usd
+    from public.session_cost_deltas() scd
+    cross join window_bounds wb
+    where scd.recorded_at >= wb.window_start and scd.recorded_at <= wb.window_end
+    group by scd.user_name
+  ),
+  tokens_by_user as (
+    select
+      std.user_name,
+      sum(coalesce(std.input_token_delta, 0)) as window_input_tokens,
+      sum(coalesce(std.output_token_delta, 0)) as window_output_tokens
+    from public.session_token_deltas() std
+    cross join window_bounds wb
+    where std.recorded_at >= wb.window_start and std.recorded_at <= wb.window_end
+    group by std.user_name
+  ),
+  users as (
+    select user_name from cost_by_user
+    union
+    select user_name from tokens_by_user
+  )
+  select
+    u.user_name,
+    coalesce(cbu.window_cost_usd, 0) as window_cost_usd,
+    coalesce(tbu.window_input_tokens, 0) as window_input_tokens,
+    coalesce(tbu.window_output_tokens, 0) as window_output_tokens,
+    lrl.five_hour_pct as account_five_hour_pct,
+    lrl.seven_day_pct as account_seven_day_pct,
+    lrl.five_hour_resets_at,
+    lrl.seven_day_resets_at
+  from users u
+  left join cost_by_user cbu on cbu.user_name = u.user_name
+  left join tokens_by_user tbu on tbu.user_name = u.user_name
+  cross join latest_rate_limits lrl;
+$$;
+
+revoke all on function public.get_team_window_summary() from public;
+revoke all on function public.get_team_window_summary() from authenticated;
+grant execute on function public.get_team_window_summary() to anon;
+
+drop function if exists public.get_room_window_summary(text);
+
+create function public.get_room_window_summary(p_email text)
+returns table (
+  user_name text,
+  window_cost_usd numeric,
+  window_input_tokens numeric,
+  window_output_tokens numeric,
+  account_five_hour_pct numeric,
+  account_seven_day_pct numeric,
+  five_hour_resets_at timestamptz,
+  seven_day_resets_at timestamptz
+)
+language sql
+security definer
+set search_path = public
+as $$
+  with latest_rate_limits as (
+    select five_hour_pct, seven_day_pct, five_hour_resets_at, seven_day_resets_at
+    from public.usage_snapshots
+    where account_email = p_email
+      and (five_hour_pct is not null or seven_day_pct is not null)
+    order by recorded_at desc
+    limit 1
+  ),
+  window_bounds as (
+    select
+      five_hour_resets_at - interval '5 hours' as window_start,
+      five_hour_resets_at as window_end
+    from latest_rate_limits
+    where five_hour_resets_at is not null
+  ),
+  session_accounts as (
+    select distinct on (session_id) session_id, account_email
+    from public.usage_snapshots
+    where session_id is not null
+    order by session_id, recorded_at desc, id desc
+  ),
+  cost_by_user as (
+    select scd.user_name, sum(coalesce(scd.cost_delta, 0)) as window_cost_usd
+    from public.session_cost_deltas() scd
+    join session_accounts sa on sa.session_id = scd.session_id
+    cross join window_bounds wb
+    where sa.account_email = p_email
+      and scd.recorded_at >= wb.window_start and scd.recorded_at <= wb.window_end
+    group by scd.user_name
+  ),
+  tokens_by_user as (
+    select
+      std.user_name,
+      sum(coalesce(std.input_token_delta, 0)) as window_input_tokens,
+      sum(coalesce(std.output_token_delta, 0)) as window_output_tokens
+    from public.session_token_deltas() std
+    join session_accounts sa on sa.session_id = std.session_id
+    cross join window_bounds wb
+    where sa.account_email = p_email
+      and std.recorded_at >= wb.window_start and std.recorded_at <= wb.window_end
+    group by std.user_name
+  ),
+  users as (
+    select user_name from cost_by_user
+    union
+    select user_name from tokens_by_user
+  )
+  select
+    u.user_name,
+    coalesce(cbu.window_cost_usd, 0) as window_cost_usd,
+    coalesce(tbu.window_input_tokens, 0) as window_input_tokens,
+    coalesce(tbu.window_output_tokens, 0) as window_output_tokens,
+    lrl.five_hour_pct as account_five_hour_pct,
+    lrl.seven_day_pct as account_seven_day_pct,
+    lrl.five_hour_resets_at,
+    lrl.seven_day_resets_at
+  from users u
+  left join cost_by_user cbu on cbu.user_name = u.user_name
+  left join tokens_by_user tbu on tbu.user_name = u.user_name
+  cross join latest_rate_limits lrl;
+$$;
+
+revoke all on function public.get_room_window_summary(text) from public, anon, authenticated;
+grant execute on function public.get_room_window_summary(text) to service_role;

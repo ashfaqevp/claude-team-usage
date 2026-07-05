@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   Snapshot,
+  SessionContext,
   readLocalLog,
   summarizeCurrentWindow,
   dailyPeaks,
@@ -159,6 +160,24 @@ async function tryFetchRoomName(accountEmail: string | null): Promise<string | n
   }
 }
 
+// Short prefix instead of the raw UUID — enough to tell two sessions apart at a
+// glance without cluttering the tooltip/panel.
+function shortSessionId(sessionId: string): string {
+  return sessionId.slice(0, 8);
+}
+
+/**
+ * Concept B, rendered: one line per currently-active session's context-window
+ * fullness. Deliberately never summed or averaged across sessions — see
+ * activeSessionContexts() in usage.ts for why that would be meaningless.
+ */
+function sessionContextsLine(sessionContexts: SessionContext[]): string {
+  if (sessionContexts.length === 0) return '';
+  return sessionContexts
+    .map((sc) => `Session ${shortSessionId(sc.sessionId)}: ${formatPct(sc.contextUsedPct)} context`)
+    .join(' · ');
+}
+
 function teamSliceLine(teamSlice: TeamSlice): string {
   return `you ≈ ${formatPct(teamSlice.myPct)} of the shared 5h limit (team at ${formatPct(
     teamSlice.accountFiveHourPct
@@ -185,6 +204,10 @@ function paintStatusBar(
   tooltip.appendMarkdown(
     `Your tokens this window: ${summary.windowInputTokens.toLocaleString()} in / ${summary.windowOutputTokens.toLocaleString()} out\n\n`
   );
+  const contextsLine = sessionContextsLine(summary.sessionContexts);
+  if (contextsLine) {
+    tooltip.appendMarkdown(`Context usage (per session): ${contextsLine}\n\n`);
+  }
   tooltip.appendMarkdown(`_Click for the full Claude Room panel._`);
   item.tooltip = tooltip;
 
@@ -348,6 +371,15 @@ function panelStyles(): string {
   }
   .stat-label { color: var(--vscode-descriptionForeground); font-size: 0.78em; }
   .stat-value { font-size: 1em; margin-top: 0.15em; font-weight: 500; }
+  .context-line { margin-top: 0.9em; }
+  .context-pill {
+    display: inline-block;
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 4px;
+    padding: 0.15em 0.5em;
+    margin: 0.3em 0.3em 0 0;
+    font-size: 0.85em;
+  }
   .donut-wrap {
     display: flex;
     flex-direction: column;
@@ -573,6 +605,16 @@ function renderHtml(args: {
         <div class="stat-card"><div class="stat-label">Your tokens</div><div class="stat-value">${summary.windowInputTokens.toLocaleString()} in / ${summary.windowOutputTokens.toLocaleString()} out</div></div>
         <div class="stat-card"><div class="stat-label">Your sessions</div><div class="stat-value">${summary.sessionCount}</div></div>
         <div class="stat-card"><div class="stat-label">Current model</div><div class="stat-value">${model ? escapeHtml(model) : '—'}</div></div>
+      </div>
+      <div class="context-line">
+        <span class="stat-label">Context usage (per session)</span>
+        <div>${
+          summary.sessionContexts.length > 0
+            ? summary.sessionContexts
+                .map((sc) => `<span class="context-pill">${escapeHtml(shortSessionId(sc.sessionId))}: ${formatPct(sc.contextUsedPct)}</span>`)
+                .join(' ')
+            : '<span class="empty">No active session context known yet.</span>'
+        }</div>
       </div>`
     : `<div class="empty">Waiting for your first Claude Code session in this window.</div>`;
 

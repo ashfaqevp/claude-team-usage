@@ -22,7 +22,7 @@ export async function getRoomPayload(event: H3Event, email: string) {
     // account_email filter applied before reducing to "latest per user" avoids that.
     client
       .from('usage_snapshots')
-      .select('user_name, model, input_tokens, output_tokens, recorded_at, five_hour_pct, seven_day_pct, five_hour_resets_at, seven_day_resets_at')
+      .select('user_name, session_id, model, input_tokens, output_tokens, context_used_pct, recorded_at, five_hour_pct, seven_day_pct, five_hour_resets_at, seven_day_resets_at')
       .eq('account_email', email)
       .order('recorded_at', { ascending: false })
       .limit(500),
@@ -52,6 +52,27 @@ export async function getRoomPayload(event: H3Event, email: string) {
   }
   const latestPerUser = [...latestByUser.values()]
 
+  // Concept B: current per-session context-window fullness. Deliberately built from
+  // the same already-fetched recentRows (no new round trip) but reduced by SESSION,
+  // not by user — a member with two active sessions must show both percentages
+  // separately, never summed/averaged/overwritten by whichever session's row is
+  // newest. recentRows is newest-first, so the first row seen per session_id is that
+  // session's latest known context_used_pct. Not filtered by recency here — every
+  // session_id seen in the last 500 Room-wide snapshots comes through, including ones
+  // that ended long ago. RoomView.vue gates the actually-displayed list on its own
+  // isIdle() cutoff before rendering; don't skip that when consuming this field.
+  const latestBySession = new Map<string, (typeof recentRows)[number]>()
+  for (const row of recentRows) {
+    if (!row.session_id || row.context_used_pct == null) continue
+    if (!latestBySession.has(row.session_id)) latestBySession.set(row.session_id, row)
+  }
+  const sessionContexts = [...latestBySession.values()].map(row => ({
+    user_name: row.user_name,
+    session_id: row.session_id as string,
+    context_used_pct: row.context_used_pct,
+    recorded_at: row.recorded_at,
+  }))
+
   // Account-wide 5h/7d + resets are duplicated on every roomWindowSummary row, but that
   // RPC only returns rows for members with cost inside the *current* window — a Room
   // that's brand new, or simply idle this window, would strip the account stats along
@@ -80,6 +101,7 @@ export async function getRoomPayload(event: H3Event, email: string) {
     },
     roomWindowSummary,
     latestPerUser,
+    sessionContexts,
     dailyUsage: dailyResult.data ?? [],
   }
 }

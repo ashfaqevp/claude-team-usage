@@ -119,10 +119,15 @@ const memberCards = computed(() => {
         slice,
         color: colorFor(userName),
         model: latest?.model ?? '—',
-        // Null (not 0) when the last snapshot didn't report a context window, so
-        // the card can show "—" instead of a misleading "0 in / 0 out".
-        inputTokens: latest?.input_tokens == null ? null : num(latest.input_tokens),
-        outputTokens: latest?.output_tokens == null ? null : num(latest.output_tokens),
+        // Delta-summed across ALL of this member's sessions in the current window (see
+        // get_room_window_summary/session_token_deltas) - NOT the latest snapshot's
+        // cumulative total, which would silently drop a second parallel session's
+        // tokens and fold in pre-window spend from a long-running session.
+        windowInputTokens: num(summary?.window_input_tokens),
+        windowOutputTokens: num(summary?.window_output_tokens),
+        // Concept B: this member's currently-active sessions' own context-window
+        // fullness, never summed/averaged (see sessionContextsByUser below).
+        sessionContexts: sessionContextsByUser.value.get(userName) ?? [],
         recordedAt: latest?.recorded_at ?? null,
         active: isActive(latest?.recorded_at),
         idle: isIdle(latest?.recorded_at),
@@ -130,6 +135,36 @@ const memberCards = computed(() => {
     })
     .sort((a, b) => a.userName.localeCompare(b.userName))
 })
+
+// Concept B grouping: per-session context %, grouped by member, sorted by most
+// recently seen session first. Deliberately never reduced to one number per user.
+//
+// sessionContexts (from roomData.ts) is built from the last 500 snapshots across the
+// whole Room, which can include sessions that ended a long time ago - without a
+// recency gate, a member's card would show stale/closed sessions' context % as if
+// they were still live. Gated on the same isIdle() cutoff (30 min) this component
+// already uses to dim a member's whole card, so "still counts as active" means the
+// same thing everywhere in this view.
+const sessionContextsByUser = computed(() => {
+  const byUser = new Map<string, { sessionId: string, contextUsedPct: number, recordedAt: string | null }[]>()
+  for (const row of props.data.sessionContexts) {
+    if (isIdle(row.recorded_at)) continue
+    if (!byUser.has(row.user_name)) byUser.set(row.user_name, [])
+    byUser.get(row.user_name)!.push({
+      sessionId: row.session_id,
+      contextUsedPct: num(row.context_used_pct),
+      recordedAt: row.recorded_at,
+    })
+  }
+  for (const sessions of byUser.values()) {
+    sessions.sort((a, b) => new Date(b.recordedAt ?? 0).getTime() - new Date(a.recordedAt ?? 0).getTime())
+  }
+  return byUser
+})
+
+function shortSessionId(sessionId: string) {
+  return sessionId.slice(0, 8)
+}
 
 // Room-wide daily rows: daily_usage carries one row per (day, user_name) — rolled
 // up to one row per day for the Room-level table and charts.
@@ -297,11 +332,8 @@ function submitRename() {
                   <dd class="tabular-nums">{{ formatCost(card.windowCost) }}</dd>
                 </div>
                 <div class="flex justify-between">
-                  <dt class="text-muted-foreground" title="Size of this member's most recent conversation context - not a total for the window">Context tokens</dt>
-                  <dd class="tabular-nums">
-                    <template v-if="card.inputTokens == null && card.outputTokens == null">—</template>
-                    <template v-else>{{ (card.inputTokens ?? 0).toLocaleString() }} in / {{ (card.outputTokens ?? 0).toLocaleString() }} out</template>
-                  </dd>
+                  <dt class="text-muted-foreground" title="Summed from per-snapshot deltas across all of this member's sessions in the current 5h window - not a single session's latest cumulative reading">Tokens this window</dt>
+                  <dd class="tabular-nums">{{ card.windowInputTokens.toLocaleString() }} in / {{ card.windowOutputTokens.toLocaleString() }} out</dd>
                 </div>
                 <div class="flex justify-between">
                   <dt class="text-muted-foreground">Model</dt>
@@ -310,6 +342,19 @@ function submitRename() {
                 <div class="flex justify-between">
                   <dt class="text-muted-foreground">Last seen</dt>
                   <dd>{{ formatLastSeen(card.recordedAt) }}</dd>
+                </div>
+                <div v-if="card.sessionContexts.length > 0" class="flex justify-between gap-2">
+                  <dt class="text-muted-foreground" title="Per-conversation memory fullness for each currently-active session - not summed or averaged across sessions">Context usage</dt>
+                  <dd class="flex flex-wrap justify-end gap-1">
+                    <span
+                      v-for="sc in card.sessionContexts"
+                      :key="sc.sessionId"
+                      class="rounded border px-1.5 py-0.5 text-[11px] tabular-nums text-muted-foreground"
+                      :title="`Session ${sc.sessionId}`"
+                    >
+                      {{ shortSessionId(sc.sessionId) }}: {{ formatPct(sc.contextUsedPct) }}
+                    </span>
+                  </dd>
                 </div>
               </dl>
             </CardContent>

@@ -15,6 +15,10 @@ export interface Snapshot {
   model: string | null;
   total_input_tokens: number | null;
   total_output_tokens: number | null;
+  // Per-conversation context-window fullness (context_window.used_percentage) — a
+  // per-session health indicator, NOT cumulative and NOT summable across sessions.
+  // Unrelated to the 5h/7d plan limit. See SessionContext / activeSessionContexts below.
+  context_used_pct: number | null;
 }
 
 export interface WindowSummary {
@@ -28,6 +32,15 @@ export interface WindowSummary {
   windowInputTokens: number;
   windowOutputTokens: number;
   sessionCount: number;
+  // Concept B: current per-session context usage, one entry per session active in this
+  // window — deliberately a list, not a blended number (see activeSessionContexts).
+  sessionContexts: SessionContext[];
+}
+
+export interface SessionContext {
+  sessionId: string;
+  contextUsedPct: number;
+  tsMillis: number;
 }
 
 export interface DailyPeak {
@@ -82,14 +95,13 @@ export interface SessionCostEvent {
   tsMillis: number;
   sessionKey: string;
   costDelta: number;
-  inputTokenDelta: number;
-  outputTokenDelta: number;
 }
 
-interface FieldTracker {
-  prevCost: number | null;
-  prevInputTokens: number | null;
-  prevOutputTokens: number | null;
+export interface SessionTokenEvent {
+  tsMillis: number;
+  sessionKey: string;
+  inputTokenDelta: number;
+  outputTokenDelta: number;
 }
 
 /** `current - prev` clamped to >= 0; the first reading for a session (prev == null) counts in full. */
@@ -107,16 +119,42 @@ function clampedDelta(current: number, prev: number | null, sessionKey: string, 
 }
 
 /**
- * Splits each session's cumulative readings into per-snapshot contributions ("deltas")
- * attributed to the moment they actually happened — not lumped onto whichever
- * window/day the session's latest snapshot happens to fall in. For each session, in
- * time order, a snapshot contributes `max(0, value - previous value)` for cost and
- * tokens (the first snapshot contributes its raw value, since there's no earlier
- * reading to diff against). This lets a long-running session that spans a 5-hour
- * window or a calendar day be split correctly between them, instead of attributing its
- * entire lifetime total to a single bucket. It also absorbs Claude Code's known
- * resumed-session reset bug (COST_RESET_BUG_URL): a drop produces a zero-contribution
- * event (logged) rather than corrupting the running total.
+ * Snapshots in time order, with malformed-`ts` entries excluded and a warning logged.
+ * Shared preprocessing only — sessionCostDeltas() and sessionTokenDeltas() each still
+ * walk this list and compute their own field's deltas independently, so cost and token
+ * accounting stay two parallel, independently verifiable functions (deliberately not
+ * merged into one "session deltas" function that returns both — see the module-level
+ * note above sessionTokenDeltas for why).
+ *
+ * Excluding here (not just at readLocalLog()) matters because sessionCostDeltas() /
+ * sessionTokenDeltas() must stay safe to call directly on in-memory data that never
+ * went through readLocalLog() (as tests, or any future caller, might). Without this, an
+ * unparseable `ts` would sort to epoch-0 (see tsMillis) and scramble the true delta
+ * order for its session.
+ */
+function sortedValidSnapshots(snapshots: Snapshot[]): Snapshot[] {
+  return snapshots
+    .filter((s) => {
+      if (Number.isFinite(Date.parse(s.ts))) return true;
+      console.warn(
+        `[claude-team-usage] malformed timestamp — excluding snapshot from delta calculation: ${JSON.stringify(s.ts)}`
+      );
+      return false;
+    })
+    .sort((a, b) => tsMillis(a) - tsMillis(b));
+}
+
+/**
+ * Splits each session's cumulative cost readings into per-snapshot contributions
+ * ("deltas") attributed to the moment they actually happened — not lumped onto
+ * whichever window/day the session's latest snapshot happens to fall in. For each
+ * session, in time order, a snapshot contributes `max(0, cost - previous cost)` (the
+ * first snapshot contributes its raw value, since there's no earlier reading to diff
+ * against). This lets a long-running session that spans a 5-hour window or a calendar
+ * day be split correctly between them, instead of attributing its entire lifetime
+ * total to a single bucket. It also absorbs Claude Code's known resumed-session reset
+ * bug (COST_RESET_BUG_URL): a drop produces a zero-contribution event (logged) rather
+ * than corrupting the running total.
  *
  * Snapshots with a null `session_id` are skipped entirely — there is no reliable key
  * to diff them against a previous reading. Treating each one as its own synthetic
@@ -126,48 +164,66 @@ function clampedDelta(current: number, prev: number | null, sessionKey: string, 
  * appears. Excluding them instead is a deliberate, safe under-count (matches
  * `session_cost_deltas()` on the Supabase side, which does the same) rather than a
  * risky over-count.
- *
- * Snapshots with an unparseable `ts` are also excluded here, not just at
- * `readLocalLog()` — this function must be safe to call directly (as it is from
- * tests, and could be from a future caller) without relying on that one entry point
- * having already filtered the input. Without this, such a snapshot would sort to
- * epoch-0 (see tsMillis) and scramble the true delta order for its session.
  */
 export function sessionCostDeltas(snapshots: Snapshot[]): SessionCostEvent[] {
-  const sorted = snapshots
-    .filter((s) => {
-      if (Number.isFinite(Date.parse(s.ts))) return true;
-      console.warn(
-        `[claude-team-usage] malformed timestamp — excluding snapshot from delta calculation: ${JSON.stringify(s.ts)}`
-      );
-      return false;
-    })
-    .sort((a, b) => tsMillis(a) - tsMillis(b));
-  const trackers = new Map<string, FieldTracker>();
+  const sorted = sortedValidSnapshots(snapshots);
+  const prevCostBySession = new Map<string, number | null>();
   const events: SessionCostEvent[] = [];
 
   for (const s of sorted) {
     if (s.session_id == null) continue;
     const key = s.session_id;
-    const tracker = trackers.get(key) ?? { prevCost: null, prevInputTokens: null, prevOutputTokens: null };
 
-    const costDelta =
-      typeof s.cost_usd === 'number' ? clampedDelta(s.cost_usd, tracker.prevCost, key, 'cost_usd') : 0;
+    const prevCost = prevCostBySession.has(key) ? prevCostBySession.get(key)! : null;
+    const costDelta = typeof s.cost_usd === 'number' ? clampedDelta(s.cost_usd, prevCost, key, 'cost_usd') : 0;
+    if (typeof s.cost_usd === 'number') prevCostBySession.set(key, s.cost_usd);
+
+    events.push({ tsMillis: tsMillis(s), sessionKey: key, costDelta });
+  }
+
+  return events;
+}
+
+/**
+ * Token counterpart to sessionCostDeltas(), same shape and same exclusion rules (null
+ * session_id, malformed ts) — kept as a separate function rather than folded into
+ * sessionCostDeltas() so cost and token accounting can be verified independently and
+ * never silently drift into depending on each other's edge-case handling. Mirrors
+ * public.session_token_deltas() in supabase/schema.sql; keep both in sync the same way
+ * sessionCostDeltas()/session_cost_deltas() already are (see edge case 3 in
+ * DATA_SOURCES.md).
+ *
+ * `context_window.total_input_tokens` / `total_output_tokens` are cumulative per
+ * session, exactly like cost.total_cost_usd, so the same delta treatment applies:
+ * max(0, current - previous), first reading counts in full, a drop is clamped to zero
+ * and logged rather than corrupting the running total.
+ */
+export function sessionTokenDeltas(snapshots: Snapshot[]): SessionTokenEvent[] {
+  const sorted = sortedValidSnapshots(snapshots);
+  const prevInputBySession = new Map<string, number | null>();
+  const prevOutputBySession = new Map<string, number | null>();
+  const events: SessionTokenEvent[] = [];
+
+  for (const s of sorted) {
+    if (s.session_id == null) continue;
+    const key = s.session_id;
+
+    const prevInput = prevInputBySession.has(key) ? prevInputBySession.get(key)! : null;
+    const prevOutput = prevOutputBySession.has(key) ? prevOutputBySession.get(key)! : null;
+
     const inputTokenDelta =
       typeof s.total_input_tokens === 'number'
-        ? clampedDelta(s.total_input_tokens, tracker.prevInputTokens, key, 'total_input_tokens')
+        ? clampedDelta(s.total_input_tokens, prevInput, key, 'total_input_tokens')
         : 0;
     const outputTokenDelta =
       typeof s.total_output_tokens === 'number'
-        ? clampedDelta(s.total_output_tokens, tracker.prevOutputTokens, key, 'total_output_tokens')
+        ? clampedDelta(s.total_output_tokens, prevOutput, key, 'total_output_tokens')
         : 0;
 
-    if (typeof s.cost_usd === 'number') tracker.prevCost = s.cost_usd;
-    if (typeof s.total_input_tokens === 'number') tracker.prevInputTokens = s.total_input_tokens;
-    if (typeof s.total_output_tokens === 'number') tracker.prevOutputTokens = s.total_output_tokens;
-    trackers.set(key, tracker);
+    if (typeof s.total_input_tokens === 'number') prevInputBySession.set(key, s.total_input_tokens);
+    if (typeof s.total_output_tokens === 'number') prevOutputBySession.set(key, s.total_output_tokens);
 
-    events.push({ tsMillis: tsMillis(s), sessionKey: key, costDelta, inputTokenDelta, outputTokenDelta });
+    events.push({ tsMillis: tsMillis(s), sessionKey: key, inputTokenDelta, outputTokenDelta });
   }
 
   return events;
@@ -202,17 +258,36 @@ export function getCurrentWindow(snapshots: Snapshot[]): { start: number; end: n
   return { start, end };
 }
 
+/**
+ * Concept B: the current context-window fullness of each session that's active in the
+ * given window (one entry per session_id, latest known context_used_pct for that
+ * session — NOT delta'd, NOT summed/averaged across sessions). Summing or averaging
+ * these would be meaningless (context % is a per-conversation memory-fullness gauge,
+ * not a volume metric) — display each session's own number separately.
+ */
+function activeSessionContexts(snapshots: Snapshot[], sessionIds: Set<string>): SessionContext[] {
+  const latestBySession = new Map<string, SessionContext>();
+  for (const s of snapshots) {
+    if (s.session_id == null || !sessionIds.has(s.session_id) || typeof s.context_used_pct !== 'number') continue;
+    const ms = tsMillis(s);
+    const existing = latestBySession.get(s.session_id);
+    if (!existing || ms >= existing.tsMillis) {
+      latestBySession.set(s.session_id, { sessionId: s.session_id, contextUsedPct: s.context_used_pct, tsMillis: ms });
+    }
+  }
+  return [...latestBySession.values()].sort((a, b) => b.tsMillis - a.tsMillis);
+}
+
 export function summarizeCurrentWindow(snapshots: Snapshot[]): WindowSummary {
   const latestRateLimits = latestWithRateLimits(snapshots);
   const window = getCurrentWindow(snapshots);
-  const events = sessionCostDeltas(snapshots);
+  const costEvents = sessionCostDeltas(snapshots);
+  const tokenEvents = sessionTokenDeltas(snapshots);
 
   let windowCostUsd = 0;
-  let windowInputTokens = 0;
-  let windowOutputTokens = 0;
   const sessionsInWindow = new Set<string>();
 
-  for (const e of events) {
+  for (const e of costEvents) {
     // If the current window isn't known yet (no rate_limits snapshot seen at all —
     // normally only true for a few seconds before a session's first real API
     // response), exclude everything rather than treating the entire local log's
@@ -222,6 +297,14 @@ export function summarizeCurrentWindow(snapshots: Snapshot[]): WindowSummary {
     if (!inWindow) continue;
     sessionsInWindow.add(e.sessionKey);
     windowCostUsd += e.costDelta;
+  }
+
+  let windowInputTokens = 0;
+  let windowOutputTokens = 0;
+  for (const e of tokenEvents) {
+    const inWindow = window ? e.tsMillis >= window.start && e.tsMillis <= window.end : false;
+    if (!inWindow) continue;
+    sessionsInWindow.add(e.sessionKey);
     windowInputTokens += e.inputTokenDelta;
     windowOutputTokens += e.outputTokenDelta;
   }
@@ -239,6 +322,7 @@ export function summarizeCurrentWindow(snapshots: Snapshot[]): WindowSummary {
     windowInputTokens,
     windowOutputTokens,
     sessionCount,
+    sessionContexts: activeSessionContexts(snapshots, sessionsInWindow),
   };
 }
 

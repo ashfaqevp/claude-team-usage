@@ -47,6 +47,7 @@ export type Database = {
       usage_snapshots: {
         Row: {
           account_email: string | null
+          context_used_pct: number | null
           cost_usd: number | null
           five_hour_pct: number | null
           five_hour_resets_at: string | null
@@ -64,6 +65,7 @@ export type Database = {
         }
         Insert: {
           account_email?: string | null
+          context_used_pct?: number | null
           cost_usd?: number | null
           five_hour_pct?: number | null
           five_hour_resets_at?: string | null
@@ -81,6 +83,7 @@ export type Database = {
         }
         Update: {
           account_email?: string | null
+          context_used_pct?: number | null
           cost_usd?: number | null
           five_hour_pct?: number | null
           five_hour_resets_at?: string | null
@@ -144,6 +147,8 @@ export type Database = {
           seven_day_resets_at: string
           user_name: string
           window_cost_usd: number
+          window_input_tokens: number
+          window_output_tokens: number
         }[]
       }
       get_team_window_summary: {
@@ -155,6 +160,8 @@ export type Database = {
           seven_day_resets_at: string
           user_name: string
           window_cost_usd: number
+          window_input_tokens: number
+          window_output_tokens: number
         }[]
       }
       list_rooms: {
@@ -171,6 +178,16 @@ export type Database = {
         Args: never
         Returns: {
           cost_delta: number
+          recorded_at: string
+          session_id: string
+          user_name: string
+        }[]
+      }
+      session_token_deltas: {
+        Args: never
+        Returns: {
+          input_token_delta: number
+          output_token_delta: number
           recorded_at: string
           session_id: string
           user_name: string

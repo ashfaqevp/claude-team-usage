@@ -201,3 +201,53 @@ dashboard), `supabase/` (shared schema, sibling to both), `CONTEXT.md`,
 
 Not yet built: the admin dashboard (Phase 4+), which will read `latest_per_user` /
 `daily_usage` with the service_role key, and the owner-login/Room-scoped UI (Phase 8+).
+
+## Bug fix (2026-07-05): token accounting was never delta-based (edge case 13)
+
+- `context_window.total_input_tokens` / `total_output_tokens` are cumulative per
+  session, exactly like `cost.total_cost_usd`, but were only ever read as the latest
+  snapshot's raw value — never delta'd. This double-counted-by-omission across a
+  member's multiple parallel sessions (whichever session rendered last silently
+  overwrote the others' token numbers) and mis-attributed a session's pre-window
+  tokens into the current window. Full writeup, including the double-fix's null-gap
+  subtlety and the literal verified test output on both sides, is edge case 13 in
+  DATA_SOURCES.md — read that before touching either delta function again.
+- Fixed by adding `sessionTokenDeltas()` (extension, `usage.ts`) and
+  `public.session_token_deltas()` (Supabase, `schema.sql`) as **parallel, separate**
+  functions mirroring `sessionCostDeltas()` / `session_cost_deltas()` — deliberately
+  not merged into the cost delta function, so the two stay independently verifiable.
+  `summarizeCurrentWindow()` / `get_team_window_summary()` / `get_room_window_summary()`
+  now sum both delta streams independently within the same window bounds already used
+  for cost, exposed as `windowInputTokens`/`windowOutputTokens` (extension) and
+  `window_input_tokens`/`window_output_tokens` (Supabase RPCs — required a DROP +
+  CREATE of both RPCs since adding output columns changes their return shape).
+- Added a second, structurally distinct concept that didn't exist before: **per-session
+  context usage** (`context_window.used_percentage`, now persisted as
+  `context_used_pct` end to end — `Snapshot.context_used_pct` → `usage-logger.js` →
+  `sync.ts` → `usage_snapshots.context_used_pct`). This is a per-conversation
+  memory-fullness gauge, not a volume metric — never summed/averaged across a member's
+  sessions. Shown as a short per-session list (e.g. "Session abc123: 62% context") in
+  the extension's status-bar tooltip and webview panel, and in the dashboard member
+  card (`RoomView.vue`) as a new "Context usage" line, replacing the old "Context
+  tokens" label that showed the latest snapshot's cumulative token counts and read as
+  if it were a volume/total metric — that label/behavior is gone, not just renamed.
+- Dashboard: `server/utils/roomData.ts` (not `server/api/team-summary.get.ts`, which
+  no longer exists — see the dashboard's own CLAUDE.md on the Phase 8 rename to
+  `my-room`/`getRoomPayload`) now also selects `session_id` and `context_used_pct` from
+  its existing `usage_snapshots` query (no new round trip) and reduces them to one
+  latest-known-value row per `session_id` (not per user), returned as a new
+  `sessionContexts` array on `MyRoomResponse` alongside the existing `latestPerUser`.
+  `RoomView.vue`'s member cards now source "Tokens this window" from
+  `roomWindowSummary`'s new windowed fields instead of `latestPerUser`'s raw snapshot
+  totals.
+- Applied directly to project `htrxdxtbrkdabrrqbpyr` via the Supabase MCP tool
+  (migration `phase13_token_deltas_and_session_context`) and verified live in
+  transactions rolled back afterward — see DATA_SOURCES.md edge case 13 for the literal
+  before/after numbers on both the extension and Supabase sides, plus confirmation that
+  real data (1777 rows) was undisturbed and a real query against the live Room
+  (`rashid@iocod.com`) returns correct non-zero windowed token totals.
+- `dashboard/app/types/database.types.ts` regenerated via the Supabase MCP tool's
+  `generate_typescript_types` to match (new `context_used_pct` column, new
+  `session_token_deltas` function, new `window_input_tokens`/`window_output_tokens`
+  RPC return columns) — regenerate this again after any further schema change, per the
+  dashboard's own CLAUDE.md.

@@ -63,6 +63,9 @@ function buildSnapshot(status) {
     model: get(status, ['model', 'display_name'], null) || get(status, ['model', 'id'], null),
     total_input_tokens: get(status, ['context_window', 'total_input_tokens'], null),
     total_output_tokens: get(status, ['context_window', 'total_output_tokens'], null),
+    // Per-conversation context-window fullness — a per-session health indicator, not
+    // cumulative and not summable across sessions (unlike cost/tokens above).
+    context_used_pct: get(status, ['context_window', 'used_percentage'], null),
   };
 }
 
@@ -77,6 +80,11 @@ function readLastSnapshot() {
 
 function hasChanged(prev, next) {
   if (!prev) return true;
+  // Deliberately does NOT trigger on total_input_tokens/total_output_tokens/
+  // context_used_pct alone changing — those move on nearly every render, and logging
+  // on every context-window tick would flood the log. They still get captured whenever
+  // a logged snapshot happens to include a fresh reading (which correlates with cost
+  // changing, since both move on real API activity).
   return (
     prev.five_hour_pct !== next.five_hour_pct ||
     prev.seven_day_pct !== next.seven_day_pct ||
