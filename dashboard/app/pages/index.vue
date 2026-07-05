@@ -24,8 +24,15 @@ async function signIn() {
     options: { redirectTo: window.location.origin },
   })
 }
+
+async function signInWithGoogle() {
+  await supabase.auth.signInWithOAuth({
+    provider: 'google',
+    options: { redirectTo: window.location.origin },
+  })
+}
 </script>
 
 <template>
-  <SignInScreen @sign-in="signIn" />
+  <SignInScreen @sign-in="signIn" @sign-in-google="signInWithGoogle" />
 </template>
