@@ -55,7 +55,7 @@ defineEmits<{ signIn: []; signInGoogle: [] }>()
       </Button>
 
       <p class="mt-6 text-xs text-muted-foreground">
-        Log in with the GitHub account whose email matches your Claude account.
+        Log in with the GitHub or Google account whose email matches your Claude account.
       </p>
     </div>
   </div>

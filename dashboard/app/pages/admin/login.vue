@@ -21,13 +21,20 @@ async function handleSubmit() {
     password: password.value,
   })
 
-  submitting.value = false
-
   if (error) {
+    submitting.value = false
     errorMessage.value = 'Invalid email or password.'
     return
   }
 
+  // @nuxtjs/supabase updates useSupabaseUser() asynchronously off an
+  // onAuthStateChange callback that isn't awaited by signInWithPassword. Without this,
+  // router.push('/admin') can land before that state settles, so admin/index.vue's
+  // onMounted sees a stale null user and immediately bounces back to /admin/login.
+  const { data: claimsData } = await supabase.auth.getClaims()
+  useSupabaseUser().value = claimsData?.claims ?? null
+
+  submitting.value = false
   await router.push('/admin')
 }
 </script>

@@ -8,7 +8,7 @@ if (user.value) {
   await navigateTo('/dashboard')
 }
 
-// GitHub redirects back here with ?code=... which the Supabase browser client
+// The OAuth provider redirects back here with ?code=... which the Supabase browser client
 // exchanges for a session automatically (detectSessionInUrl). Once that lands,
 // force a full browser navigation rather than a client-side route change, so
 // /dashboard is always reached via a fresh server render with the
