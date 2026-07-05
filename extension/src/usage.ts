@@ -183,6 +183,16 @@ export function latestWithRateLimits(snapshots: Snapshot[]): Snapshot | null {
   return best;
 }
 
+/** Most recent snapshot that carries a model name, or null if none seen. */
+export function latestModel(snapshots: Snapshot[]): string | null {
+  let best: Snapshot | null = null;
+  for (const s of snapshots) {
+    if (!s.model) continue;
+    if (!best || tsMillis(s) >= tsMillis(best)) best = s;
+  }
+  return best ? best.model : null;
+}
+
 /** Window = [latest five_hour_resets_at - 5h, latest five_hour_resets_at]. Null if unknown. */
 export function getCurrentWindow(snapshots: Snapshot[]): { start: number; end: number } | null {
   const latest = latestWithRateLimits(snapshots);

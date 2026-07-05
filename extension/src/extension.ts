@@ -7,12 +7,13 @@ import {
   readLocalLog,
   summarizeCurrentWindow,
   dailyPeaks,
+  latestModel,
   formatUsd,
   formatPct,
   formatCountdown,
 } from './usage';
 import { syncLocalLog } from './sync';
-import { fetchTeamSlice, TeamSlice } from './team';
+import { fetchTeamSlice, fetchRoomName, TeamSlice } from './team';
 import { resolveIdentity } from './identity';
 import { readClaudeAccountEmail } from './claudeAccount';
 
@@ -144,6 +145,20 @@ async function tryFetchTeamSlice(): Promise<TeamSlice | null> {
   }
 }
 
+/** Tries get_room_name if Supabase is configured and the account email is known; null on any failure so callers fall back to showing the email instead. */
+async function tryFetchRoomName(accountEmail: string | null): Promise<string | null> {
+  if (!accountEmail) return null;
+  try {
+    const cfg = vscode.workspace.getConfiguration('claudeUsage');
+    const url = (cfg.get<string>('supabaseUrl') || '').trim();
+    const anonKey = (cfg.get<string>('supabaseAnonKey') || '').trim();
+    if (!url || !anonKey) return null;
+    return await fetchRoomName(url, anonKey, accountEmail);
+  } catch {
+    return null;
+  }
+}
+
 function teamSliceLine(teamSlice: TeamSlice): string {
   return `you ≈ ${formatPct(teamSlice.myPct)} of the shared 5h limit (team at ${formatPct(
     teamSlice.accountFiveHourPct
@@ -160,7 +175,7 @@ function paintStatusBar(
     : `$(pulse) 5h ${formatPct(summary.accountFiveHourPct)} team · you ${formatUsd(summary.windowCostUsd)}`;
 
   const tooltip = new vscode.MarkdownString();
-  tooltip.appendMarkdown(`**Claude Team Usage**\n\n`);
+  tooltip.appendMarkdown(`**Claude Room**\n\n`);
   if (teamSlice) {
     tooltip.appendMarkdown(`${teamSliceLine(teamSlice)}\n\n`);
   }
@@ -170,7 +185,7 @@ function paintStatusBar(
   tooltip.appendMarkdown(
     `Your tokens this window: ${summary.windowInputTokens.toLocaleString()} in / ${summary.windowOutputTokens.toLocaleString()} out\n\n`
   );
-  tooltip.appendMarkdown(`_Click for the full usage panel._`);
+  tooltip.appendMarkdown(`_Click for the full Claude Room panel._`);
   item.tooltip = tooltip;
 
   const pct = teamSlice ? teamSlice.accountFiveHourPct : summary.accountFiveHourPct;
@@ -189,7 +204,7 @@ async function updateStatusBar(item: vscode.StatusBarItem): Promise<void> {
     summary = summarizeCurrentWindow(loadSnapshots());
   } catch (err) {
     item.text = `$(pulse) 5h -- team`;
-    item.tooltip = `Claude Team Usage: couldn't read the local log — ${String(err)}`;
+    item.tooltip = `Claude Room: couldn't read the local log — ${String(err)}`;
     item.backgroundColor = undefined;
     return;
   }
@@ -200,7 +215,7 @@ async function updateStatusBar(item: vscode.StatusBarItem): Promise<void> {
     paintStatusBar(item, summary, null);
   } catch (err) {
     item.text = `$(pulse) 5h -- team`;
-    item.tooltip = `Claude Team Usage: couldn't read the local log — ${String(err)}`;
+    item.tooltip = `Claude Room: couldn't read the local log — ${String(err)}`;
     item.backgroundColor = undefined;
     return;
   }
@@ -222,18 +237,31 @@ function escapeHtml(s: string): string {
 function showUsagePanel(context: vscode.ExtensionContext): void {
   const panel = vscode.window.createWebviewPanel(
     'claudeTeamUsage.usage',
-    'Claude Usage',
+    'Claude Room',
     vscode.ViewColumn.Active,
     { enableScripts: false }
   );
 
   const render = async () => {
-    const snapshots = loadSnapshots();
-    const summary = summarizeCurrentWindow(snapshots);
-    const peaks = dailyPeaks(snapshots);
-    const teamSlice = await tryFetchTeamSlice();
-    const accountEmail = readClaudeAccountEmail();
-    panel.webview.html = renderHtml(summary, peaks, teamSlice, accountEmail);
+    try {
+      const snapshots = loadSnapshots();
+      const summary = summarizeCurrentWindow(snapshots);
+      const peaks = dailyPeaks(snapshots);
+      const model = latestModel(snapshots);
+      const accountEmail = readClaudeAccountEmail();
+
+      // Paint the local-only view first — Supabase may be slow or unreachable, and this
+      // must never leave the panel blank while waiting on it (same reasoning as
+      // updateStatusBar's local-first paint above).
+      panel.webview.html = renderHtml({ summary, peaks, model, teamSlice: null, accountEmail, roomName: null });
+
+      const [teamSlice, roomName] = await Promise.all([tryFetchTeamSlice(), tryFetchRoomName(accountEmail)]);
+      if (teamSlice || roomName) {
+        panel.webview.html = renderHtml({ summary, peaks, model, teamSlice, accountEmail, roomName });
+      }
+    } catch (err) {
+      panel.webview.html = renderErrorHtml(err);
+    }
   };
 
   render();
@@ -241,19 +269,141 @@ function showUsagePanel(context: vscode.ExtensionContext): void {
   panel.onDidDispose(() => clearInterval(interval), null, context.subscriptions);
 }
 
-function renderHtml(
-  summary: ReturnType<typeof summarizeCurrentWindow>,
-  peaks: ReturnType<typeof dailyPeaks>,
-  teamSlice: TeamSlice | null,
-  accountEmail: string | null
-): string {
-  const bar = (pct: number | null, colorVar: string) => {
+function panelStyles(): string {
+  return `
+  * { box-sizing: border-box; }
+  body {
+    font-family: var(--vscode-font-family);
+    color: var(--vscode-foreground);
+    padding: 1.5em;
+    max-width: 640px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 1.3em; margin: 0; }
+  h2 { font-size: 1em; margin: 0 0 0.8em; color: var(--vscode-foreground); }
+  .header { margin-bottom: 1.2em; }
+  .title-row { display: flex; align-items: baseline; gap: 0.6em; flex-wrap: wrap; }
+  .room-name { font-size: 1.1em; color: var(--vscode-descriptionForeground); }
+  .account-line {
+    margin-top: 0.4em;
+    font-size: 0.9em;
+    color: var(--vscode-descriptionForeground);
+  }
+  .warning {
+    margin-top: 0.6em;
+    padding: 0.5em 0.8em;
+    font-size: 0.85em;
+    border-radius: 4px;
+    background: var(--vscode-inputValidation-warningBackground, rgba(255, 204, 0, 0.1));
+    border: 1px solid var(--vscode-inputValidation-warningBorder, transparent);
+    color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+  }
+  .card {
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 6px;
+    padding: 1.1em 1.3em;
+    margin-bottom: 1.2em;
+    background: var(--vscode-editorWidget-background, transparent);
+  }
+  .empty {
+    font-size: 0.9em;
+    color: var(--vscode-descriptionForeground);
+    font-style: italic;
+    padding: 0.4em 0;
+  }
+  .slice-line {
+    font-size: 0.95em;
+    margin-bottom: 1em;
+  }
+  .row { margin-bottom: 1em; }
+  .row:last-child { margin-bottom: 0; }
+  .label { display: flex; justify-content: space-between; margin-bottom: 0.3em; font-size: 0.85em; }
+  .label .pct { color: var(--vscode-descriptionForeground); }
+  .bar-track {
+    height: 8px;
+    border-radius: 4px;
+    background: rgba(128, 128, 128, 0.25);
+    overflow: hidden;
+  }
+  .bar-fill {
+    height: 100%;
+    border-radius: 4px;
+  }
+  .countdown {
+    font-size: 0.8em;
+    color: var(--vscode-descriptionForeground);
+    margin-top: 0.3em;
+  }
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 0.6em 1em;
+    margin-top: 1.1em;
+    font-size: 0.85em;
+  }
+  .stat-label { color: var(--vscode-descriptionForeground); font-size: 0.9em; }
+  .stat-value { font-size: 1.05em; margin-top: 0.1em; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 0.35em 0.8em 0.35em 0; font-size: 0.85em; }
+  th { border-bottom: 1px solid var(--vscode-panel-border); color: var(--vscode-descriptionForeground); font-weight: normal; }
+  td { border-bottom: 1px solid var(--vscode-panel-border); }
+  tr:last-child td { border-bottom: none; }
+  `;
+}
+
+function renderErrorHtml(err: unknown): string {
+  return `<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><style>${panelStyles()}</style></head>
+<body>
+  <div class="header"><h1>Claude Room</h1></div>
+  <div class="card">
+    <div class="empty">Couldn't load usage data — ${escapeHtml(String(err))}</div>
+  </div>
+</body>
+</html>`;
+}
+
+function renderHtml(args: {
+  summary: ReturnType<typeof summarizeCurrentWindow>;
+  peaks: ReturnType<typeof dailyPeaks>;
+  model: string | null;
+  teamSlice: TeamSlice | null;
+  accountEmail: string | null;
+  roomName: string | null;
+}): string {
+  const { summary, peaks, model, teamSlice, accountEmail, roomName } = args;
+
+  const bar = (pct: number | null, resetsAt: number | null, colorVar: string, label: string) => {
     const clamped = typeof pct === 'number' ? Math.max(0, Math.min(100, pct)) : 0;
     return `
-      <div class="bar-track">
-        <div class="bar-fill" style="width:${clamped}%;background:${colorVar};"></div>
+      <div class="row">
+        <div class="label"><span>${label}</span><span class="pct">${formatPct(pct)}</span></div>
+        <div class="bar-track">
+          <div class="bar-fill" style="width:${clamped}%;background:${colorVar};"></div>
+        </div>
+        <div class="countdown">Resets in ${formatCountdown(resetsAt)}</div>
       </div>`;
   };
+
+  const hasWindowData = summary.accountFiveHourPct != null;
+
+  const usageBody = hasWindowData
+    ? `
+      ${
+        teamSlice
+          ? `<div class="slice-line">${escapeHtml(teamSliceLine(teamSlice))}</div>`
+          : `<div class="slice-line empty">Team comparison unavailable — showing this device's own usage only.</div>`
+      }
+      ${bar(summary.accountFiveHourPct, summary.fiveHourResetsAt, 'var(--vscode-charts-blue, #3794ff)', 'Account 5h usage')}
+      ${bar(summary.accountSevenDayPct, summary.sevenDayResetsAt, 'var(--vscode-charts-purple, #b180d7)', 'Account 7d usage')}
+      <div class="stat-grid">
+        <div><div class="stat-label">Your cost this window</div><div class="stat-value">${formatUsd(summary.windowCostUsd)}</div></div>
+        <div><div class="stat-label">Your tokens</div><div class="stat-value">${summary.windowInputTokens.toLocaleString()} in / ${summary.windowOutputTokens.toLocaleString()} out</div></div>
+        <div><div class="stat-label">Your sessions</div><div class="stat-value">${summary.sessionCount}</div></div>
+        <div><div class="stat-label">Current model</div><div class="stat-value">${model ? escapeHtml(model) : '—'}</div></div>
+      </div>`
+    : `<div class="empty">Waiting for your first Claude Code session in this window.</div>`;
 
   const rows = peaks
     .map(
@@ -268,72 +418,44 @@ function renderHtml(
     )
     .join('');
 
+  const activityBody =
+    peaks.length > 0
+      ? `<table>
+        <thead>
+          <tr><th>Date</th><th>Peak 5h</th><th>Peak 7d</th><th>Your cost</th><th>Sessions</th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`
+      : `<div class="empty">No activity logged yet.</div>`;
+
   return `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
-<style>
-  body {
-    font-family: var(--vscode-font-family);
-    color: var(--vscode-foreground);
-    padding: 1.5em;
-  }
-  h2 { margin-top: 1.5em; margin-bottom: 0.3em; }
-  .row { margin-bottom: 1.2em; }
-  .label { display: flex; justify-content: space-between; margin-bottom: 0.3em; font-size: 0.9em; }
-  .bar-track {
-    height: 10px;
-    border-radius: 5px;
-    background: var(--vscode-progressBar-background, #333);
-    opacity: 0.3;
-    overflow: hidden;
-  }
-  .bar-fill {
-    height: 100%;
-    border-radius: 5px;
-  }
-  table { border-collapse: collapse; width: 100%; margin-top: 0.5em; }
-  th, td { text-align: left; padding: 0.3em 0.8em 0.3em 0; font-size: 0.9em; }
-  th { border-bottom: 1px solid var(--vscode-panel-border); }
-  .stat { font-size: 0.9em; margin: 0.2em 0; }
-</style>
+<style>${panelStyles()}</style>
 </head>
 <body>
-  <div class="stat">${
-    accountEmail
-      ? `Tracking Claude account: ${escapeHtml(accountEmail)}`
-      : `Couldn't read your Claude account email — usage is still being tracked as 'unknown'.`
-  }</div>
-  ${
-    teamSlice
-      ? `<h2>Team</h2>
-  <div class="stat">${teamSliceLine(teamSlice)}</div>`
-      : ''
-  }
-  <h2>This 5-hour window</h2>
-  <div class="row">
-    <div class="label"><span>Account 5h usage</span><span>${formatPct(summary.accountFiveHourPct)}</span></div>
-    ${bar(summary.accountFiveHourPct, 'var(--vscode-charts-blue, #3794ff)')}
-  </div>
-  <div class="row">
-    <div class="label"><span>Account 7d usage</span><span>${formatPct(summary.accountSevenDayPct)}</span></div>
-    ${bar(summary.accountSevenDayPct, 'var(--vscode-charts-purple, #b180d7)')}
+  <div class="header">
+    <div class="title-row">
+      <h1>Claude Room</h1>
+      ${roomName ? `<span class="room-name">${escapeHtml(roomName)}</span>` : ''}
+    </div>
+    ${
+      accountEmail
+        ? `<div class="account-line">Tracking Claude account: ${escapeHtml(accountEmail)}</div>`
+        : `<div class="warning">Couldn't read your Claude account email — usage tracked as 'unknown'.</div>`
+    }
   </div>
 
-  <div class="stat">Resets in: ${formatCountdown(summary.fiveHourResetsAt)}</div>
-  <div class="stat">Your cost this window: ${formatUsd(summary.windowCostUsd)}</div>
-  <div class="stat">Your tokens this window: ${summary.windowInputTokens.toLocaleString()} in / ${summary.windowOutputTokens.toLocaleString()} out</div>
-  <div class="stat">Your sessions this window: ${summary.sessionCount}</div>
+  <div class="card">
+    <h2>Your usage</h2>
+    ${usageBody}
+  </div>
 
-  <h2>Daily peaks (local log)</h2>
-  <table>
-    <thead>
-      <tr><th>Date</th><th>Peak 5h</th><th>Peak 7d</th><th>Your cost</th><th>Sessions</th></tr>
-    </thead>
-    <tbody>
-      ${rows || '<tr><td colspan="5">No data yet.</td></tr>'}
-    </tbody>
-  </table>
+  <div class="card">
+    <h2>Recent activity</h2>
+    ${activityBody}
+  </div>
 </body>
 </html>`;
 }

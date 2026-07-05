@@ -45,3 +45,14 @@ export async function fetchTeamSlice(url: string, anonKey: string, myUserName: s
     accountSevenDayPct,
   };
 }
+
+/**
+ * Fetches this Room's display name via get_room_name(p_email). Returns null on any
+ * failure, if the RPC isn't exposed to anon (Phase 7 made this an explicit tradeoff,
+ * not guaranteed), or if the Room has no name set yet — callers should fall back to
+ * showing the tracked email instead, not error.
+ */
+export async function fetchRoomName(url: string, anonKey: string, email: string): Promise<string | null> {
+  const result = await callRpc<string | null>(url, anonKey, 'get_room_name', { p_email: email });
+  return typeof result === 'string' && result.trim() ? result.trim() : null;
+}
