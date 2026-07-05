@@ -1,19 +1,33 @@
 # Context for future sessions
 
-> **Where this stands:** the single-Room engine (Phases 1–5) is the proven foundation.
-> Now building the multi-user product ("Claude Room") per CLAUDE_ROOM_BUILD_GUIDE.md
-> (Phases 6–10). This model supersedes the earlier "room_id + invite flow" sketch:
+> **Where this stands:** the multi-user product ("Claude Room") is built — Phases 1–10
+> per CLAUDE_ROOM_BUILD_GUIDE.md are all implemented. The single-Room engine (Phases
+> 1–5) is the proven foundation it's built on. This model supersedes the earlier
+> "room_id + invite flow" sketch, which was never built:
 > - A **Room is a Claude account**, identified by its org email
 >   (`oauthAccount.emailAddress` from `~/.claude.json`), stored as `account_email` on
 >   each snapshot. **No room_id, no room codes, no invite flow** — Rooms are implicit
 >   (a Room exists once its first row arrives).
 > - **Member identity within a Room** is still the git/device label (unchanged).
-> - **Owner access** = GitHub login on the dashboard (Google later); the verified login
+> - **Owner access** = GitHub login on `/` (Google later); the verified login
 >   email must equal the Room's Claude email — that match is the whole authorization.
-> - Reads are locked server-side to the owner's own Room; writes stay insert-only
->   (tighten later). See the build guide's "Future hardening" for deferred items.
-> - Phase 6 done: extension reads `oauthAccount.emailAddress` on its 30s timer and
+> - **Admin access** = a separate `/admin` page, Supabase email/password login (not
+>   GitHub), listing every Room and opening any one in the same Room-view an owner sees.
+> - Reads are locked server-side to the caller's own Room (owner) or an admin-selected
+>   Room (admin, re-checked against `public.admins` on every `/api/admin/*` route);
+>   writes stay insert-only (tighten later). See the build guide's "Future hardening"
+>   for deferred items.
+> - Phase 6: extension reads `oauthAccount.emailAddress` on its 30s timer and
 >   stamps every synced row with `account_email` (falls back to `'unknown'` if unreadable).
+> - Phases 7–10: Supabase multi-Room schema (`rooms`, `admins`,
+>   `get_room_window_summary`, `list_rooms`, `get_room_name`), the dashboard's owner
+>   login + Room-scoped UI (`/`) and separate admin page (`/admin`), and the extension's
+>   redesigned, theme-aware webview panel (Room name, usage-pace indicator).
+> - **Not yet verified end-to-end:** unlike Phases 3/7 below (each confirmed live with
+>   real or rolled-back-transaction test data), there's no recorded confirmation of an
+>   actual GitHub sign-in whose verified email matches a real Room, or of the admin
+>   credential reaching `/admin` — the authorization code has been reviewed, not
+>   exercised with a live login.
 
 ## Goal
 
@@ -199,8 +213,9 @@ dashboard), `supabase/` (shared schema, sibling to both), `CONTEXT.md`,
   insert-only access and the new `get_room_name` grant still work. Test rows deleted
   afterward. `supabase/schema.sql` updated to match.
 
-Not yet built: the admin dashboard (Phase 4+), which will read `latest_per_user` /
-`daily_usage` with the service_role key, and the owner-login/Room-scoped UI (Phase 8+).
+Built since (see the header above): the admin dashboard (Phase 9) and the
+owner-login/Room-scoped UI (Phase 8), both reading Room data with the service_role key
+via `server/utils/roomData.ts`'s shared `getRoomPayload()`.
 
 ## Bug fix (2026-07-05): token accounting was never delta-based (edge case 13)
 

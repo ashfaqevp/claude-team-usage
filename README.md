@@ -8,6 +8,8 @@ Splits a shared Claude Max/Team account's usage limits across the people actuall
 using it, so each **Room member** sees their own real share instead of one blended
 number.
 
+**Live dashboard:** [claude-room.vercel.app](https://claude-room.vercel.app/)
+
 <!-- SCREENSHOT: the Room owner's dashboard (dashboard.vue / RoomView.vue) - header with 5h/7d bars, member grid with per-member slices, insights strip, daily activity table -->
 ![Claude Room owner dashboard](docs/screenshots/dashboard-overview.png)
 
@@ -106,6 +108,10 @@ All optional — configure only if you want to override a default.
 More detail on identity resolution and sync behavior: [extension/README.md](extension/README.md).
 
 ## Dashboard (for the Room owner)
+
+Hosted at **[claude-room.vercel.app](https://claude-room.vercel.app/)** — no local
+setup needed just to view your Room. The steps below are only for running your own
+copy locally (development, or standing up a separate deployment).
 
 ```bash
 cd dashboard

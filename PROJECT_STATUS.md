@@ -3,29 +3,36 @@
 **What this is:** a platform for anyone sharing a single Claude Max/Team account to
 see how the shared 5-hour and 7-day usage limit is actually split among the people
 using it, since Anthropic only exposes one combined number with no per-person
-breakdown. Any user can create a **Room** tied to their login, then invite others to
-join it. Each member installs a lightweight VS Code extension — zero manual setup —
-that quietly reports their own usage in the background. The **Room owner** gets a
-live dashboard showing every **Room member's** real-time share of the account's
-limits, plus daily history.
+breakdown. A **Room** *is* a Claude account, identified by its org email — Rooms are
+implicit (a Room exists the moment its first usage snapshot arrives), with no room
+codes, no invite flow, and nothing to manually create. Each member installs a
+lightweight VS Code extension — zero manual setup — that quietly reports their own
+usage in the background. The **Room owner** signs in with GitHub (their verified
+login email must match the Room's Claude email) and gets a live dashboard showing
+every **Room member's** real-time share of the account's limits, plus daily history.
+A separate `/admin` page (Supabase email/password login) lets a small set of known
+operators list and open any Room.
 
 **Purpose of this file:** a complete snapshot of what's built, tested, and still
 open, meant to be uploaded as Project knowledge so a fresh conversation has full
 context without re-explaining the history. This is the "where things actually
-stand" document — `BUILD_GUIDE.md` (in the repo) is the "how each phase was built"
-reference, and `CONTEXT.md` / `DATA_SOURCES.md` (also in the repo) hold the
-architectural decisions and data-source specifics.
+stand" document — `BUILD_GUIDE.md` (Phases 1–5) and `CLAUDE_ROOM_BUILD_GUIDE.md`
+(Phases 6–10, in the repo) are the "how each phase was built" reference, and
+`CONTEXT.md` / `DATA_SOURCES.md` (also in the repo) hold the architectural decisions
+and data-source specifics.
 
 ---
 
 ## The goal, in one paragraph
 
 This started as a personal tool (one owner, 2 developers, 1 shared Claude Max
-account, 3 Macs) and the single-Room version of it is fully built and verified. The
-real goal is the next level: a proper multi-tenant product where **anyone** can
-create a **Room**, invite others into it, and see a live split of that Room's shared
-usage — not hardcoded to one specific team. The single-Room version (below) is the
-proven foundation; the multi-Room product (Open Items) is what's being built next.
+account, 3 Macs) and the single-Room version of it is fully built and verified. It
+has since grown into a proper multi-tenant product (Phases 6–10, below): any Claude
+account is automatically its own **Room**, split apart from every other Room with
+zero setup — no Room creation, no invite flow — and an owner just signs in with
+GitHub to see their own Room's live split. The single-Room version (below) is the
+proven foundation the multi-Room product was built on top of; see "Open items" for
+what's still genuinely open (hardening, not the core product).
 
 ## Status: single-Room core engine built, tested, and working (v1)
 
@@ -42,17 +49,65 @@ proven foundation; the multi-Room product (Open Items) is what's being built nex
 - **Phase 3 — Supabase sync.** Snapshots sync to a Supabase table
   (`usage_snapshots`). RLS locks the publishable/anon key to insert-only — it can
   never read raw rows. A `get_team_window_summary()` RPC returns aggregates only.
-  Identity resolution (see below) is automatic, no login required (yet — see Open
-  Items for the planned real-login upgrade).
+  Identity resolution (see below) is automatic, no login required (real login was
+  added later, for the owner/admin dashboards only — see the Phase 6-10 section).
 - **Phase 4 — Dashboard.** Built in **Nuxt 4** (`dashboard/`), not static HTML —
   the Supabase **secret** key lives server-side only (Nitro `runtimeConfig`,
   never sent to the browser). Shows per-member slices, sorted, color-coded, plus a
-  daily-peaks table. This is currently the Room-owner-only view for one hardcoded
-  Room (the real team); multi-Room support is not yet built.
+  daily-peaks table. At this phase it was still a single hardcoded Room (the real
+  team); multi-Room support was added later (Phase 8, see below).
 - **Phase 5 — Packaging.** Real `.vsix` built and installed via "Install from
   VSIX" (not just F5 dev mode) — confirmed it activates cleanly, wires the
   status-line hook automatically, and works with zero configuration (URL/key are
   baked into `package.json` defaults, since the publishable key is safe to ship).
+
+### Phase 6-10 — Claude Room multi-user product
+
+- **Phase 6 — Extension captures the Claude account email (the Room key).** The
+  extension reads `oauthAccount.emailAddress` from `~/.claude.json`
+  (`extension/src/claudeAccount.ts`) on its existing 30s sync timer and stamps every
+  synced snapshot with `account_email`, falling back to `'unknown'` if the file/field
+  can't be read — that bucket is never mixed into a real Room.
+- **Phase 7 — Supabase multi-Room schema.** Added `public.rooms` (`claude_email`,
+  `room_name`) and `public.admins` (`email`), both `service_role`-only. Added
+  Room-scoped RPCs: `get_room_window_summary(p_email)` (per-member window stats for
+  one Room), `list_rooms()` (one row per Room for the admin switcher), and
+  `get_room_name(p_email)` (the one RPC granted to `anon`, so the extension can show
+  a Room's display name without exposing usage data). `usage_snapshots`,
+  `latest_per_user`, and `daily_usage` all carry `account_email`.
+- **Phase 8 — Dashboard: owner GitHub login + Room-scoped UI.** `/` (`pages/index.vue`)
+  requires GitHub login via Supabase Auth and redirects a signed-in user to
+  `/dashboard`; `server/api/my-room.get.ts` resolves the Room strictly from the
+  caller's own verified session email (401 if signed out) and delegates to the shared
+  `getRoomPayload()` (`server/utils/roomData.ts`), which calls
+  `get_room_window_summary`, reads `usage_snapshots`/`daily_usage` filtered by
+  `account_email`, and reads the Room's name/admin flag — a client can never request
+  another Room. `RoomView.vue` renders the Room header (name, tracked email, 5h/7d
+  bars + reset countdowns), a member grid (slice, cost, tokens, model, last-seen,
+  active/idle), an insights strip, and a daily activity table.
+- **Phase 9 — Admin page.** A separate `/admin` (`pages/admin/login.vue`, Supabase
+  email/password — not GitHub) lists every Room via `server/api/admin/rooms.get.ts`
+  and opens any one via `server/api/admin/room.get.ts` (the one route where an
+  `?email=` query param is trusted, only after the admin check passes), reusing the
+  same `RoomView` component the owner sees. `server/utils/adminAuth.ts`'s
+  `requireAdminEmail()` is called independently by every `/api/admin/*` route and
+  returns a single 403 for every failure mode (not signed in, not in `admins`, or a
+  lookup error) — never revealing which.
+- **Phase 10 — Extension UI/UX polish.** The webview panel was rewritten to a
+  theme-aware design (VS Code `--vscode-*` variables), shows the Room name (via
+  `get_room_name`) or falls back to the tracked email, and adds a pace indicator
+  (`computePaceStatus` in `extension.ts`, "ahead of pace" / "on pace" / "within pace")
+  comparing elapsed window time against usage progress. The dashboard gained matching
+  chart components (`ShareDonutCard.vue`'s "your share" donut, `UsageTimelineCard.vue`,
+  `ActivityHeatmapCard.vue`).
+
+**Not yet verified end-to-end:** unlike Phase 3/7's Supabase-side changes (each
+confirmed live above with real or rolled-back-transaction test data), there's no
+recorded confirmation of an actual live sign-in for either login flow — e.g. a real
+GitHub account whose verified email matches a real Room's `account_email`
+successfully reaching `/dashboard`, or the admin credential reaching `/admin`. The
+authorization logic (verified-session-email-only Room scoping, independent per-route
+admin re-checks) has been read and reviewed, not exercised against a live login.
 
 ### The core calculation
 
@@ -78,14 +133,18 @@ spans a 5-hour reset boundary.
 
 Priority order, resolved once per extension activation:
 1. `userNameOverride` setting (manual, optional)
-2. *(Not yet implemented — see Open Items)* Claude account email from `~/.claude.json`
-3. `git config --global user.email` / `user.name`
-4. Random device ID, generated once and cached locally
+2. `git config --global user.email` / `user.name`
+3. Random device ID, generated once and cached locally
+
+(Claude account email from `~/.claude.json` was floated here originally as a possible
+future identity source, but Phase 6 ended up building it for a different purpose —
+the **Room key** (`account_email`), not a per-member identity fallback. Member
+identity within a Room still resolves via steps 1-3 above, unchanged.)
 
 This is **identity for labeling, not authentication** — nothing verifies it's
 really that person. Acceptable tradeoff for proving out the single-Room version;
 real identity verification is exactly what the multi-Room upgrade (GitHub OAuth
-login) is for — see Open Items.
+login, now built — see the Phase 6-10 section above) is for.
 
 ### 5 real bugs found and fixed (verified with actual before/after test output, not just review)
 
@@ -139,60 +198,66 @@ limitations** (not bugs, documented in `DATA_SOURCES.md`):
 ## Repo structure
 ```
 claude-team-usage/
-  extension/          VS Code extension (Phases 1-2-3, packaged in Phase 5)
-    src/               TypeScript source
+  extension/          VS Code extension (Phases 1-2-3, packaged in Phase 5; Room
+                      email capture in Phase 6, UI polish in Phase 10)
+    src/               TypeScript source (claudeAccount.ts reads the Room-key email)
     media/usage-logger.js   the status-line hook script
-    scripts/verify-edge-cases.js   regression tests for the 5 fixed bugs
-  dashboard/          Nuxt 4 app (Phase 4)
+    scripts/verify-edge-cases.js   regression tests for the fixed bugs
+  dashboard/          Nuxt 4 app (Phase 4; owner login + Room UI in Phase 8,
+                      separate /admin page in Phase 9)
     server/api/        holds the Supabase secret key, server-side only
+      admin/           admin-only routes (server/utils/adminAuth.ts gates these)
     pages/
+      admin/           separate /admin login + Room-switcher page (Phase 9)
   supabase/schema.sql  source of truth for the DB schema, RLS, RPC, views
   CONTEXT.md           architectural decisions, kept updated across build sessions
   DATA_SOURCES.md      exact data fields used/ignored + edge case documentation
-  BUILD_GUIDE.md       phase-by-phase build guide with Claude Code prompts
+  BUILD_GUIDE.md       phase-by-phase build guide for Phases 1-5 (Claude Code prompts)
+  CLAUDE_ROOM_BUILD_GUIDE.md   phase-by-phase build guide for Phases 6-10
 ```
 Package manager: **pnpm** (not npm). Git history preserved through the
 extension/dashboard reorganization via `git mv`.
 
 ---
 
-## Open items / not yet done — the multi-Room product
+## Open items / not yet done
 
-The single-Room version above is the proven foundation. Turning it into the real
-product means:
+The multi-Room product described above (Phases 6-10) is built — the items below are
+the deferred hardening from `CLAUDE_ROOM_BUILD_GUIDE.md`'s "Future hardening" section,
+not the core product:
 
-1. **Multi-Room data model** — every table needs a `room_id`; RLS scoped so a Room
-   only ever sees its own data. Currently everything is one hardcoded Room.
-2. **Real login (GitHub OAuth via Supabase Auth)** — replaces the current
-   git-config/device-id identity guess with verified identity. Confirmed necessary:
-   Claude account email is NOT programmatically retrievable (multiple open
-   Anthropic GitHub feature requests confirm `/status` only works interactively,
-   no env var, no accessible non-interactive command) — so GitHub login is the
-   right anchor, not Claude account email.
-3. **Room creation + auto-join** — a user creates a Room, is automatically added
-   as its owner/first member.
-4. **Invite flow** — owner generates an invite link; joiner signs in with GitHub
-   and is added as a Room member. Strict approval/expiry can be skipped for now
-   (testing), tightened later.
-5. **Room-scoped dashboard** — an owner only ever sees their own Room's members
-   and data, not other Rooms.
-6. **Claude account email as a secondary identity source** — found that
-   `~/.claude.json` contains the logged-in account's email in plain text
-   (confirmed via `grep`/`find`; a safe field-path lookup script was written but
-   not yet turned into reader code). This is undocumented internal storage, not a
-   stable public API — even if implemented, it should stay a nice-to-have
-   auto-fill, not something the product depends on, and must degrade gracefully to
-   git config if the field disappears in a future Claude Code update. GitHub OAuth
-   (item 2) is the real identity backbone, not this.
-7. **Personal Claude account bleed-through** — if a member logs into a personal
-   Claude account using the *same* `~/.claude` config dir, this tool cannot
-   distinguish that from Room usage (confirmed: no account identifier exists
-   anywhere accessible). Recommended mitigation: members use a separate
-   `CLAUDE_CONFIG_DIR` for any personal account. Needs to go in end-user docs once
-   the product has real onboarding.
-8. **Optional hardening**: a plausibility check on timestamps (reject values
-   implausibly far from now), to catch the "valid but wrong timestamp" class of
-   bug in practice, even though it can't be closed theoretically.
+1. **Authenticated, Room-scoped inserts.** Writes still use the shipped
+   publishable/anon key against an unauthenticated `with check (true)` insert
+   policy — anyone with that key could inject rows into any Room. Not tightened yet;
+   an accepted tradeoff while usage is a handful of internal devs.
+2. **Google login.** Only GitHub is wired up as an owner-login provider so far;
+   Google (many Claude accounts are Google-based) would use the identical
+   email-match logic via another Supabase Auth provider.
+3. **`CLAUDE_CONFIG_DIR` guidance for dual-account users.** Not yet documented for
+   end users. Lower-stakes than it used to be: since a Room is now keyed by account
+   email, a member's personal Claude account already routes to its own separate Room
+   automatically — this would only be belt-and-suspenders, not required.
+4. **Timestamp plausibility check.** Insert-time (`mapToRow()`) still accepts any
+   parseable timestamp, including implausible ones (e.g. an accidental epoch date) —
+   see `DATA_SOURCES.md` edge cases 10 and 12. Would catch the realistic
+   epoch/zero-value case; the theoretical "valid but wrong date" gap can't be closed
+   by any type system.
+5. **Hard account filter (only if ever wanted).** Deliberately not built — routing
+   by `account_email` already keeps Rooms clean without exclusion logic, and an
+   active filter would be a riskier default (a Claude Code update nulling the email
+   field would zero out a whole Room, instead of just landing rows in `'unknown'`).
+6. **Invite / approval / expiry.** Not needed for the current implicit, email-keyed
+   Room model — only relevant if Rooms ever need to be private beyond "you must
+   control the matching email."
+7. **Re-verify `oauthAccount.emailAddress` on future Claude Code updates.** It's
+   undocumented internal storage (see `DATA_SOURCES.md`); a future release could move
+   or rename it. `readClaudeAccountEmail()` already degrades to `null` /
+   `account_email = 'unknown'` if that happens, so no data is lost — just re-check
+   the field after upgrading Claude Code.
+
+**Not yet verified end-to-end** (see the Phase 6-10 section above): the
+GitHub-owner-login and admin email/password login flows are implemented but have no
+recorded confirmation of a real, live sign-in.
 
 ## Working style / preferences established in this build
 

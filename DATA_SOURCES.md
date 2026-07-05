@@ -35,11 +35,12 @@ API response comes back. All code handles this without crashing.
 
 ---
 
-## B) Actual files on disk under `~/.claude`
+## B) Actual files on disk under (or alongside) `~/.claude`
 
 | Path                                     | What it is                       | Do we read it?                                                                                                                                                                         |
 | ---------------------------------------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `~/.claude/settings.json`              | Claude Code's own config         | We read/write**only** the `statusLine` key. Nothing else is touched.                                                                                                           |
+| `~/.claude.json` (home-dir file, a sibling of the `~/.claude/` directory, not inside it) | Claude Code's own account/login file | The extension reads **only** `oauthAccount.emailAddress` (`extension/src/claudeAccount.ts`, cached 30s) to determine `account_email` — the Room key. This is undocumented internal Claude Code storage, read best-effort: a future release could rename or move it, in which case any failure here falls back to `null` (synced rows tagged `account_email = 'unknown'`), never a crash. |
 | `~/.claude/projects/*.jsonl`           | Real conversation transcripts    | **Deliberately never read.** Input token counts in these files are known-buggy placeholders (not final values) — using them would make our numbers *less* accurate, not more. |
 | `~/.claude/team-usage/local-log.jsonl` | Our own snapshot log             | Written by our logger, read by the extension. Not Anthropic's — ours.                                                                                                                 |
 | `~/.claude/team-usage/last.json`       | Our own "last snapshot" bookmark | Used to detect changes and avoid flooding the log.                                                                                                                                     |
