@@ -336,13 +336,77 @@ function panelStyles(): string {
   }
   .stat-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    gap: 0.6em 1em;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.7em;
     margin-top: 1.1em;
-    font-size: 0.85em;
   }
-  .stat-label { color: var(--vscode-descriptionForeground); font-size: 0.9em; }
-  .stat-value { font-size: 1.05em; margin-top: 0.1em; }
+  .stat-card {
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 5px;
+    padding: 0.5em 0.7em;
+    background: var(--vscode-editor-background, transparent);
+  }
+  .stat-label { color: var(--vscode-descriptionForeground); font-size: 0.78em; }
+  .stat-value { font-size: 1em; margin-top: 0.15em; font-weight: 500; }
+  .usage-visual-row {
+    display: flex;
+    align-items: center;
+    gap: 1.6em;
+    margin-bottom: 1.2em;
+    flex-wrap: wrap;
+  }
+  .donut-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.4em;
+    flex: 0 0 auto;
+  }
+  .donut-caption {
+    font-size: 0.75em;
+    color: var(--vscode-descriptionForeground);
+    text-align: center;
+  }
+  .donut-text {
+    font-size: 20px;
+    font-family: var(--vscode-font-family);
+    fill: var(--vscode-foreground);
+  }
+  .pace {
+    flex: 1 1 220px;
+    min-width: 200px;
+  }
+  .pace-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.85em;
+    margin-bottom: 0.35em;
+  }
+  .pace-label .pct { color: var(--vscode-descriptionForeground); }
+  .pace-track {
+    position: relative;
+    height: 10px;
+    border-radius: 5px;
+    background: rgba(128, 128, 128, 0.25);
+    overflow: visible;
+  }
+  .pace-fill {
+    height: 100%;
+    border-radius: 5px;
+    background: var(--vscode-charts-blue, #3794ff);
+  }
+  .pace-marker {
+    position: absolute;
+    top: -3px;
+    width: 2px;
+    height: 16px;
+    background: var(--vscode-charts-yellow, #cca700);
+  }
+  .pace-status {
+    margin-top: 0.4em;
+    font-size: 0.85em;
+    font-weight: 500;
+  }
   table { border-collapse: collapse; width: 100%; }
   th, td { text-align: left; padding: 0.35em 0.8em 0.35em 0; font-size: 0.85em; }
   th { border-bottom: 1px solid var(--vscode-panel-border); color: var(--vscode-descriptionForeground); font-weight: normal; }
@@ -362,6 +426,82 @@ function renderErrorHtml(err: unknown): string {
   </div>
 </body>
 </html>`;
+}
+
+/** ~120px SVG gauge for a single 0-100+ account percentage. Caps the ring fill at 100% but shows the real number in the center. */
+function renderDonut(pct: number | null): string {
+  const size = 120;
+  const strokeWidth = 14;
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const capped = typeof pct === 'number' ? Math.max(0, Math.min(100, pct)) : 0;
+  const filled = circumference * (capped / 100);
+
+  return `
+    <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+      <circle cx="${size / 2}" cy="${size / 2}" r="${radius}" fill="none" stroke="rgba(128,128,128,0.25)" stroke-width="${strokeWidth}" />
+      <circle cx="${size / 2}" cy="${size / 2}" r="${radius}" fill="none" stroke="var(--vscode-charts-blue, #3794ff)" stroke-width="${strokeWidth}" stroke-dasharray="${filled} ${circumference - filled}" stroke-linecap="round" transform="rotate(-90 ${size / 2} ${size / 2})" />
+      <text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" class="donut-text">${formatPct(pct)}</text>
+    </svg>`;
+}
+
+interface PaceStatus {
+  percentUsed: number;
+  percentElapsed: number;
+  colorVar: string;
+  label: string;
+}
+
+/** How far into the current 5h window we are vs. how much of the account's 5h limit is used. Null (hides the element) when there's no known window yet. */
+function computePaceStatus(summary: ReturnType<typeof summarizeCurrentWindow>): PaceStatus | null {
+  const { accountFiveHourPct, windowStart, windowEnd } = summary;
+  if (accountFiveHourPct == null || windowStart == null || windowEnd == null) return null;
+  const totalMs = windowEnd - windowStart;
+  if (!(totalMs > 0)) return null;
+
+  const percentElapsed = Math.max(0, Math.min(100, ((Date.now() - windowStart) / totalMs) * 100));
+  const percentUsed = accountFiveHourPct;
+  const margin = 5;
+
+  if (percentUsed > percentElapsed + margin) {
+    return {
+      percentUsed,
+      percentElapsed,
+      colorVar: 'var(--vscode-charts-orange, #d18616)',
+      label: 'Ahead of pace — trending toward the 5h limit before reset',
+    };
+  }
+  if (percentUsed < percentElapsed - margin) {
+    return {
+      percentUsed,
+      percentElapsed,
+      colorVar: 'var(--vscode-charts-green, #89d185)',
+      label: 'Within pace — comfortable',
+    };
+  }
+  return {
+    percentUsed,
+    percentElapsed,
+    colorVar: 'var(--vscode-descriptionForeground)',
+    label: 'On pace',
+  };
+}
+
+function renderPaceIndicator(summary: ReturnType<typeof summarizeCurrentWindow>): string {
+  const pace = computePaceStatus(summary);
+  if (!pace) return '';
+  const cappedUsed = Math.max(0, Math.min(100, pace.percentUsed));
+  const cappedElapsed = Math.max(0, Math.min(100, pace.percentElapsed));
+
+  return `
+    <div class="pace">
+      <div class="pace-label"><span>Usage pace</span><span class="pct">${formatPct(pace.percentUsed)} used · ${formatPct(pace.percentElapsed)} elapsed</span></div>
+      <div class="pace-track">
+        <div class="pace-fill" style="width:${cappedUsed}%;"></div>
+        <div class="pace-marker" style="left:${cappedElapsed}%;"></div>
+      </div>
+      <div class="pace-status" style="color:${pace.colorVar};">${escapeHtml(pace.label)}</div>
+    </div>`;
 }
 
 function renderHtml(args: {
@@ -395,13 +535,19 @@ function renderHtml(args: {
           ? `<div class="slice-line">${escapeHtml(teamSliceLine(teamSlice))}</div>`
           : `<div class="slice-line empty">Team comparison unavailable — showing this device's own usage only.</div>`
       }
-      ${bar(summary.accountFiveHourPct, summary.fiveHourResetsAt, 'var(--vscode-charts-blue, #3794ff)', 'Account 5h usage')}
+      <div class="usage-visual-row">
+        <div class="donut-wrap">
+          ${renderDonut(summary.accountFiveHourPct)}
+          <div class="donut-caption">Account 5h usage</div>
+        </div>
+        ${renderPaceIndicator(summary)}
+      </div>
       ${bar(summary.accountSevenDayPct, summary.sevenDayResetsAt, 'var(--vscode-charts-purple, #b180d7)', 'Account 7d usage')}
       <div class="stat-grid">
-        <div><div class="stat-label">Your cost this window</div><div class="stat-value">${formatUsd(summary.windowCostUsd)}</div></div>
-        <div><div class="stat-label">Your tokens</div><div class="stat-value">${summary.windowInputTokens.toLocaleString()} in / ${summary.windowOutputTokens.toLocaleString()} out</div></div>
-        <div><div class="stat-label">Your sessions</div><div class="stat-value">${summary.sessionCount}</div></div>
-        <div><div class="stat-label">Current model</div><div class="stat-value">${model ? escapeHtml(model) : '—'}</div></div>
+        <div class="stat-card"><div class="stat-label">Your cost this window</div><div class="stat-value">${formatUsd(summary.windowCostUsd)}</div></div>
+        <div class="stat-card"><div class="stat-label">Your tokens</div><div class="stat-value">${summary.windowInputTokens.toLocaleString()} in / ${summary.windowOutputTokens.toLocaleString()} out</div></div>
+        <div class="stat-card"><div class="stat-label">Your sessions</div><div class="stat-value">${summary.sessionCount}</div></div>
+        <div class="stat-card"><div class="stat-label">Current model</div><div class="stat-value">${model ? escapeHtml(model) : '—'}</div></div>
       </div>`
     : `<div class="empty">Waiting for your first Claude Code session in this window.</div>`;
 
