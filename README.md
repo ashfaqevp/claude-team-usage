@@ -215,7 +215,3 @@ describe GitHub login, Room-scoped reads, and the admin dashboard as not-yet-bui
 "Open items." That's now out of date — those were built after `PROJECT_STATUS.md`
 was last updated. Treat this README and `CLAUDE_ROOM_BUILD_GUIDE.md` as the current
 source of truth on what's actually shipped.
-
-## License
-
-TODO — no LICENSE file exists in this repo yet.
