@@ -9,8 +9,9 @@
 >   each snapshot. **No room_id, no room codes, no invite flow** — Rooms are implicit
 >   (a Room exists once its first row arrives).
 > - **Member identity within a Room** is still the git/device label (unchanged).
-> - **Owner access** = GitHub login on `/` (Google later); the verified login
->   email must equal the Room's Claude email — that match is the whole authorization.
+> - **Owner access** = GitHub, Google, or email/password login on `/` (all three via
+>   Supabase Auth); the verified login email must equal the Room's Claude email —
+>   that match is the whole authorization, identically for all three methods.
 > - **Admin access** = a separate `/admin` page, Supabase email/password login (not
 >   GitHub), listing every Room and opening any one in the same Room-view an owner sees.
 > - Reads are locked server-side to the caller's own Room (owner) or an admin-selected
@@ -266,3 +267,58 @@ via `server/utils/roomData.ts`'s shared `getRoomPayload()`.
   `session_token_deltas` function, new `window_input_tokens`/`window_output_tokens`
   RPC return columns) — regenerate this again after any further schema change, per the
   dashboard's own CLAUDE.md.
+
+## Room owner email/password login added (2026-07-06)
+
+- Additive third login option on `/` (`app/pages/index.vue` + `app/components/
+  SignInScreen.vue`) alongside the existing GitHub/Google OAuth buttons — same page,
+  not a separate one. Entirely unrelated to `/admin`: no admin file, the `admins`
+  table, or the admin login flow were touched.
+- Open signup (unlike `/admin`, which is a fixed allowlist): `supabase.auth.signUp()`
+  with `emailRedirectTo` pointing at a new `/confirm` page (never `/admin/confirm`).
+  Because "Confirm email" is on, `signUp()` never returns a session — the UI shows a
+  "check your email" message and does not log the user in.
+- Room resolution is unchanged and needs no new code: `server/api/my-room.get.ts`
+  keys everything off `serverSupabaseUser(event)`'s verified, lowercased email — that
+  logic has never branched on login provider, so an email/password account resolves
+  to a Room exactly like a GitHub/Google one, as long as its `auth.users.email`
+  matches the Room's `account_email`.
+- `/confirm`: calls `getSession()` on load; if a session exists (link was valid),
+  redirects to `/dashboard`; otherwise shows "link expired or invalid" with a
+  `supabase.auth.resend({ type: 'signup', email })` button.
+- Login failure specifically due to an unconfirmed email is detected via
+  `error.code === 'email_not_confirmed'` (not a message-string match) and shows
+  "Please confirm your email first" with the same resend option.
+- `/reset-password`: listens for the `PASSWORD_RECOVERY` event via
+  `supabase.auth.onAuthStateChange`, shows a new-password form (with password
+  confirmation) once fired, calls `supabase.auth.updateUser({ password })`, then
+  redirects to `/dashboard`. Forgot-password entry point on `/` always shows the same
+  "if that email is registered, a reset link was sent" message regardless of outcome
+  — verified live (see below) that Supabase's `resetPasswordForEmail`/`recover`
+  endpoint already returns an identical response for a registered vs. unregistered
+  email, so the UI copy doesn't have to hide anything the API would otherwise leak.
+- **Identity-linking behavior, verified live against the real project (not assumed),
+  disposable test users deleted immediately after**: `supabase.auth.signUp()` does
+  **not** auto-link into an existing account under the same email, regardless of
+  that account's original provider (GitHub/Google/email). Calling `signUp()` with an
+  email that already has a confirmed account returns **HTTP 200 with an obfuscated
+  decoy user object** — a *different*, non-existent `id`, `role: ""`, and, critically,
+  `identities: []` (empty) — never an error, so no enumeration signal leaks either. No
+  new identity is attached to the real account. Practical effect: a Room owner who
+  already uses GitHub/Google and tries to sign up with email/password under the same
+  address sees the identical generic "check your email" message as a brand-new
+  signup (correct, no leak) but will not end up with a working password login on that
+  account — they should keep using their original method. This is standard, current
+  Supabase Auth anti-enumeration behavior, not a gap introduced by this feature.
+  Real, already-existing accounts in the project were read once (email + OAuth
+  provider only, via the admin users list) to sanity-check this against live data;
+  that read incidentally returned every user's record instead of the one intended
+  filter — flagged to the user directly, no data was altered.
+- Config prerequisite (dashboard-only, not code): `http://localhost:3000/confirm` and
+  `/reset-password`, plus their prod equivalents, must be added under Supabase
+  Dashboard → Authentication → URL Configuration → Redirect URLs, or the emailed
+  links fall back to the Site URL and silently miss these pages.
+- **Not yet verified end-to-end**: no real browser click-through of an emailed
+  confirmation or reset-password link has been performed (no inbox/browser access in
+  this environment) — see PROJECT_STATUS.md for the exact manual steps to confirm
+  this live.

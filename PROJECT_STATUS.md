@@ -13,6 +13,10 @@ every **Room member's** real-time share of the account's limits, plus daily hist
 A separate `/admin` page (Supabase email/password login) lets a small set of known
 operators list and open any Room.
 
+A Room owner can sign in with GitHub, Google, or email/password (Supabase Auth) —
+whichever verified email they use must match the Room's Claude email; that match is
+the whole authorization, identically for all three methods.
+
 **Purpose of this file:** a complete snapshot of what's built, tested, and still
 open, meant to be uploaded as Project knowledge so a fresh conversation has full
 context without re-explaining the history. This is the "where things actually
@@ -230,9 +234,8 @@ not the core product:
    publishable/anon key against an unauthenticated `with check (true)` insert
    policy — anyone with that key could inject rows into any Room. Not tightened yet;
    an accepted tradeoff while usage is a handful of internal devs.
-2. **Google login.** Only GitHub is wired up as an owner-login provider so far;
-   Google (many Claude accounts are Google-based) would use the identical
-   email-match logic via another Supabase Auth provider.
+2. **Google login.** Done — wired up alongside GitHub (this item was stale; fixed
+   while touching this file for the email/password addition below).
 3. **`CLAUDE_CONFIG_DIR` guidance for dual-account users.** Not yet documented for
    end users. Lower-stakes than it used to be: since a Room is now keyed by account
    email, a member's personal Claude account already routes to its own separate Room
@@ -258,6 +261,47 @@ not the core product:
 **Not yet verified end-to-end** (see the Phase 6-10 section above): the
 GitHub-owner-login and admin email/password login flows are implemented but have no
 recorded confirmation of a real, live sign-in.
+
+## Room owner email/password login (2026-07-06)
+
+Additive third login option on `/`, alongside GitHub/Google — open signup (unlike
+`/admin`'s fixed allowlist), email confirmation required before first login, forgot/
+reset-password flow. Full detail in `CONTEXT.md`'s "Room owner email/password login
+added" section. The `admins` table, `/admin` page, and admin login code were not
+touched — verified via `git status`/`git diff` showing only `app/pages/index.vue`,
+`app/components/SignInScreen.vue`, and two new files (`app/pages/confirm.vue`,
+`app/pages/reset-password.vue`) changed.
+
+**Verified live against the real Supabase project** (disposable test users created
+via the Admin API and deleted immediately after — `rashid@iocod.com` and the 1777
+real usage rows were never touched):
+- A fresh `signUp()` returns HTTP 200, no session (confirm-email is on), a real
+  `identities` array, and dispatches a real confirmation email via the configured
+  SMTP.
+- `signUp()` with an email that already has a confirmed account returns HTTP 200 with
+  an **obfuscated decoy** (different `id`, `role: ""`, `identities: []`) — never an
+  error. This is the identity-linking answer from the original ask: no automatic
+  linking happens, and no enumeration signal leaks either way.
+- Repeating `signUp()` for the same unconfirmed email quickly hits Supabase's own
+  `over_email_send_rate_limit` (HTTP 429) — the login/signup form surfaces this as
+  "Too many attempts — please wait a bit and try again" rather than a generic error.
+
+**Not yet verified end-to-end**: no real browser click-through of an emailed
+confirmation link or reset-password link. To confirm manually:
+1. Go to `/`, switch to "Sign up", use a real email you can check, set a password.
+2. Confirm the "check your email" message appears and an email actually arrives.
+3. Click the link in that email — it should land on `/confirm` and redirect straight
+   to `/dashboard` (only works if your Room's `account_email` matches that login
+   email; otherwise `/api/my-room` will 401/404 appropriately, unrelated to this
+   flow). If it instead shows "link expired or invalid," the redirect URL allowlist
+   (Supabase Dashboard → Authentication → URL Configuration → Redirect URLs) likely
+   doesn't include this app's `/confirm` URL yet.
+4. From `/`, click "Forgot password?", submit the same email, confirm you get the
+   generic "if that email is registered..." message and a real reset email arrives.
+5. Click that email's link — it should land on `/reset-password` showing the
+   new-password form (not "link expired"); submit a new password and confirm it
+   redirects to `/dashboard`.
+6. Sign out, log in again with the new password to confirm it actually took effect.
 
 ## Working style / preferences established in this build
 
