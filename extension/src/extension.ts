@@ -133,14 +133,14 @@ function loadSnapshots(): Snapshot[] {
   return readLocalLog(LOCAL_LOG_FILE);
 }
 
-/** Tries the team RPC if Supabase is configured; null on any failure so callers fall back to local-only display. */
+/** Tries the Room-scoped team RPC if Supabase is configured and this device's Room (Claude account email) is known; null on any failure so callers fall back to local-only display. */
 async function tryFetchTeamSlice(): Promise<TeamSlice | null> {
   try {
     const cfg = vscode.workspace.getConfiguration('claudeUsage');
     const url = (cfg.get<string>('supabaseUrl') || '').trim();
     const anonKey = (cfg.get<string>('supabaseAnonKey') || '').trim();
     if (!url || !anonKey) return null;
-    return await fetchTeamSlice(url, anonKey, resolveIdentity());
+    return await fetchTeamSlice(url, anonKey, resolveIdentity(), readClaudeAccountEmail());
   } catch {
     return null;
   }
@@ -184,6 +184,28 @@ function teamSliceLine(teamSlice: TeamSlice): string {
   )})`;
 }
 
+// The account 5h/7d percentages come from two places that can disagree: the local log
+// (this device's latest reading only) and the Room-scoped RPC (the whole Room's latest
+// reading). When the team slice is available, prefer its value everywhere — the status
+// bar text, the panel's "team at X%" sentence, and the panel's 5h/7d bars — so all three
+// surfaces render one consistent number instead of the bar lagging behind the sentence.
+// Falls back to this device's local reading when there's no team data.
+function effectiveFiveHourPct(
+  summary: ReturnType<typeof summarizeCurrentWindow>,
+  teamSlice: TeamSlice | null
+): number | null {
+  return teamSlice ? teamSlice.accountFiveHourPct : summary.accountFiveHourPct;
+}
+
+function effectiveSevenDayPct(
+  summary: ReturnType<typeof summarizeCurrentWindow>,
+  teamSlice: TeamSlice | null
+): number | null {
+  return teamSlice && teamSlice.accountSevenDayPct != null
+    ? teamSlice.accountSevenDayPct
+    : summary.accountSevenDayPct;
+}
+
 function paintStatusBar(
   item: vscode.StatusBarItem,
   summary: ReturnType<typeof summarizeCurrentWindow>,
@@ -199,7 +221,7 @@ function paintStatusBar(
     tooltip.appendMarkdown(`${teamSliceLine(teamSlice)}\n\n`);
   }
   tooltip.appendMarkdown(`5h resets in ${formatCountdown(summary.fiveHourResetsAt)}\n\n`);
-  tooltip.appendMarkdown(`7d used: ${formatPct(summary.accountSevenDayPct)} (account-wide)\n\n`);
+  tooltip.appendMarkdown(`7d used: ${formatPct(effectiveSevenDayPct(summary, teamSlice))} (account-wide)\n\n`);
   tooltip.appendMarkdown(`Your cost this window: ${formatUsd(summary.windowCostUsd)}\n\n`);
   tooltip.appendMarkdown(
     `Your tokens this window: ${summary.windowInputTokens.toLocaleString()} in / ${summary.windowOutputTokens.toLocaleString()} out\n\n`
@@ -211,7 +233,7 @@ function paintStatusBar(
   tooltip.appendMarkdown(`_Click for the full Claude Room panel._`);
   item.tooltip = tooltip;
 
-  const pct = teamSlice ? teamSlice.accountFiveHourPct : summary.accountFiveHourPct;
+  const pct = effectiveFiveHourPct(summary, teamSlice);
   if (typeof pct === 'number' && pct >= 80) {
     item.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
   } else if (typeof pct === 'number' && pct >= 50) {
@@ -481,9 +503,12 @@ interface PaceStatus {
   verdict: string;
 }
 
-/** How far into the current 5h window we are vs. how much of the account's 5h limit is used. Null (hides the tick/legend) when there's no known window yet. */
-function computePaceStatus(summary: ReturnType<typeof summarizeCurrentWindow>): PaceStatus | null {
-  const { accountFiveHourPct, windowStart, windowEnd } = summary;
+/** How far into the current 5h window we are vs. how much of the account's 5h limit is used. Takes the account 5h% explicitly (the effective value, shared with the status bar) so pace and the bar fill never read it from a different source. Null (hides the tick/legend) when there's no known window yet. */
+function computePaceStatus(
+  summary: ReturnType<typeof summarizeCurrentWindow>,
+  accountFiveHourPct: number | null
+): PaceStatus | null {
+  const { windowStart, windowEnd } = summary;
   if (accountFiveHourPct == null || windowStart == null || windowEnd == null) return null;
   const totalMs = windowEnd - windowStart;
   if (!(totalMs > 0)) return null;
@@ -524,10 +549,9 @@ function computePaceStatus(summary: ReturnType<typeof summarizeCurrentWindow>): 
  * the label. The tick/badge are omitted (bar still renders) when computePaceStatus
  * can't be computed.
  */
-function renderFiveHourBar(summary: ReturnType<typeof summarizeCurrentWindow>): string {
-  const pct = summary.accountFiveHourPct;
+function renderFiveHourBar(summary: ReturnType<typeof summarizeCurrentWindow>, pct: number | null): string {
   const clamped = typeof pct === 'number' ? Math.max(0, Math.min(100, pct)) : 0;
-  const pace = computePaceStatus(summary);
+  const pace = computePaceStatus(summary, pct);
 
   const tickHtml = pace
     ? `<div class="bar-tick" style="left:${Math.max(0, Math.min(100, pace.percentElapsed))}%;"></div>`
@@ -584,7 +608,9 @@ function renderHtml(args: {
       </div>`;
   };
 
-  const hasWindowData = summary.accountFiveHourPct != null;
+  const eff5 = effectiveFiveHourPct(summary, teamSlice);
+  const eff7 = effectiveSevenDayPct(summary, teamSlice);
+  const hasWindowData = eff5 != null;
 
   const usageBody = hasWindowData
     ? `
@@ -595,8 +621,8 @@ function renderHtml(args: {
       }
       <div class="usage-columns">
         <div class="bars-col">
-          ${renderFiveHourBar(summary)}
-          ${bar(summary.accountSevenDayPct, summary.sevenDayResetsAt, 'var(--vscode-charts-purple, #b180d7)', "Team's 7d usage")}
+          ${renderFiveHourBar(summary, eff5)}
+          ${bar(eff7, summary.sevenDayResetsAt, 'var(--vscode-charts-purple, #b180d7)', "Team's 7d usage")}
         </div>
         <div class="share-col">${renderShareSection(teamSlice)}</div>
       </div>

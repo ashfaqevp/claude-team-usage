@@ -366,3 +366,71 @@ case 13.
     (`get_room_window_summary('rashid@iocod.com')`) returned real non-zero figures
     (`window_input_tokens = 1125163`, `window_output_tokens = 139701`) confirming the
     recreated function still works end-to-end against live data.
+14. **The extension read the account-wide summary, not its own Room.** *Fixed —
+    verified 2026-07-07.* The extension (`fetchTeamSlice()` in `extension/src/team.ts`)
+    called `get_team_window_summary()`, which has no `account_email` filter anywhere and
+    sums **every Room in the database together**. There is a correct Room-scoped
+    `get_room_window_summary(p_email)`, but it was granted only to `service_role`, so the
+    extension — which uses the `anon` key — couldn't call it. The result for any member
+    of a multi-Room database: (a) the "team at X%" 5h figure, the status-bar colour
+    threshold, and the reset countdown all reflected **whichever Room posted the globally
+    most-recent snapshot**, not the viewer's own Room; and (b) "your share"
+    (`myCost / totalCost`) was diluted by, and even listed, unrelated Rooms' members.
+    Because it depends on which Room was most recently active, the symptom is
+    **intermittent** — it looks correct whenever the viewer's own Room happens to be the
+    latest writer, and wrong the moment another Room writes.
+
+    Fixed by scoping the extension to its own Room: `get_room_window_summary(text)` was
+    granted to `anon` and the leaky global `get_team_window_summary()` was **revoked**
+    from `anon` (migration `room_scoped_summary_for_anon`; nothing else calls the global
+    one via `anon` — the dashboard reads the Room-scoped one via `service_role`).
+    `fetchTeamSlice()` now takes the Claude account email (`readClaudeAccountEmail()`,
+    already resolved for the panel header) and calls `get_room_window_summary` with it;
+    if the email is unknown it returns `null` (local-only display) rather than falling
+    back to the account-wide RPC, since showing no team data is safer than showing
+    another Room's. Same "probe a Room by email" exposure tradeoff already accepted for
+    `get_room_name()` — and net exposure *drops*, since the global RPC no longer leaks
+    every Room's per-member cost to anyone holding the anon key.
+
+    Verified live against `htrxdxtbrkdabrrqbpyr`. Grants confirmed:
+    `has_function_privilege('anon', 'get_room_window_summary(text)', 'EXECUTE')` = **true**,
+    `... 'get_team_window_summary()' ...` = **false**; over the real anon HTTP path a POST
+    to `get_room_window_summary` returned **200** (only rashid's Room), and a POST to
+    `get_team_window_summary` returned **401 / "permission denied for function"** — the
+    exact `callRpc()` path the extension uses. Contamination reproduced deterministically:
+    with a single synthetic row inserted from a different Room (`account_email =
+    zzz-testroom-DELETEME@example.com`, `five_hour_pct = 99`, newest `recorded_at`),
+    `get_team_window_summary()` (old) collapsed to **1 member, $12.34 denominator, 99%**
+    — rashid's own usage fell out of the window entirely — while
+    `get_room_window_summary('rashid@iocod.com')` (fixed) held its real **3 members,
+    $40.74, 51%**. Test row deleted afterward; confirmed **0 leftover test rows, 3211
+    real rows intact**.
+15. **Status bar and panel read the account 5h%/7d% from different sources.** *Fixed —
+    verified 2026-07-07.* The account 5h/7d percentages exist in two places that can
+    disagree: this device's **local log** (`summary.accountFiveHourPct` — only what *this*
+    machine last saw) and the Room-scoped **RPC** (`teamSlice.accountFiveHourPct` — the
+    whole Room's latest reading). The status-bar text and the panel's "team at X%"
+    *sentence* used the RPC value, but the panel's big "Team's 5h usage" *bar* (and the
+    pace tick) and the "Team's 7d usage" bar used the local value — so the panel's own bar
+    could show a different number than its own sentence and than the status bar, whenever
+    another member posted a more recent snapshot than this device had logged. Like edge
+    case 14 it is **intermittent** (they agree whenever this device is the latest writer),
+    which is exactly why it read as "the status bar and the panel don't update to the same
+    thing." (Edge case 14 amplified this by making the RPC value itself cross-Room; with
+    14 fixed the RPC is now the correct single source, but this local-vs-RPC split still
+    had to be unified.)
+
+    Fixed by making the RPC value the single source of truth for every surface when team
+    data is present: `effectiveFiveHourPct()` / `effectiveSevenDayPct()` in
+    `extension/src/extension.ts` return the `teamSlice` value when available and fall back
+    to the local `summary` only when there's no team data. Both panel bars, the pace-tick
+    computation (`computePaceStatus()` / `renderFiveHourBar()` now take the percentage
+    explicitly instead of re-reading `summary`), the status-bar background-colour
+    threshold, and the status-bar 7d tooltip line all route through these helpers, so the
+    status bar, the "team at X%" sentence, and the 5h/7d bars always render one consistent
+    number. Verified: `tsc` compiles clean and the existing `npm test` edge-case suite
+    still passes 9/9 (no regression to the local aggregation the helpers fall back to).
+    A residual, bounded skew remains and is accepted, not a bug: the status bar and the
+    panel own separate 30-second refresh timers, so the two can be up to one tick (≤30s)
+    out of phase; both converge on the next tick and now read identical values once
+    fetched.

@@ -1,6 +1,9 @@
 // Computes "my share of the shared 5-hour limit" from the aggregates-only
-// get_team_window_summary RPC. Never touches raw rows — the RPC itself only returns
-// per-user window costs and account-wide percentages (see supabase/schema.sql).
+// get_room_window_summary RPC, scoped to THIS device's Room (account_email). Never
+// touches raw rows — the RPC itself only returns per-user window costs and account-wide
+// percentages for the one Room (see supabase/schema.sql). Deliberately NOT the global
+// get_team_window_summary(), which sums every Room in the database together and would
+// contaminate one Room's 5h%, reset time, and cost-share with unrelated Rooms' usage.
 
 import { callRpc } from './supabaseClient';
 
@@ -20,9 +23,22 @@ export interface TeamSlice {
   accountSevenDayPct: number | null;
 }
 
-/** Fetches the team window summary and computes the calling user's slice of the account 5h limit. Null on any failure or when there's nothing to compute from. */
-export async function fetchTeamSlice(url: string, anonKey: string, myUserName: string): Promise<TeamSlice | null> {
-  const rows = await callRpc<TeamWindowRow[]>(url, anonKey, 'get_team_window_summary');
+/**
+ * Fetches this Room's window summary and computes the calling user's slice of the
+ * account 5h limit. Scoped to `accountEmail` (the Claude account email that defines the
+ * Room). Null on any failure, when there's nothing to compute from, or when the Room is
+ * unknown — without an account email we cannot scope to a single Room, and falling back
+ * to the account-wide RPC would mix in every other Room's usage, so we return null and
+ * let the caller show local-only data instead.
+ */
+export async function fetchTeamSlice(
+  url: string,
+  anonKey: string,
+  myUserName: string,
+  accountEmail: string | null
+): Promise<TeamSlice | null> {
+  if (!accountEmail) return null;
+  const rows = await callRpc<TeamWindowRow[]>(url, anonKey, 'get_room_window_summary', { p_email: accountEmail });
   if (!rows || !Array.isArray(rows) || rows.length === 0) return null;
 
   let totalCost = 0;

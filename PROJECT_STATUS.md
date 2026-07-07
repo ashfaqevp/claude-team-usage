@@ -150,7 +150,7 @@ really that person. Acceptable tradeoff for proving out the single-Room version;
 real identity verification is exactly what the multi-Room upgrade (GitHub OAuth
 login, now built — see the Phase 6-10 section above) is for.
 
-### 5 real bugs found and fixed (verified with actual before/after test output, not just review)
+### 7 real bugs found and fixed (verified with actual before/after test output, not just review)
 
 1. **Null `session_id` handling** — extension was double-counting (fake key +
    real key both counted), Supabase was silently dropping these rows entirely
@@ -171,6 +171,23 @@ login, now built — see the Phase 6-10 section above) is for.
    Also fixed as part of this round: SQL `ORDER BY` tiebreak now uses
    `(recorded_at, id)` instead of `recorded_at` alone, to match the extension's
    stable sort on identical timestamps.
+6. **Extension summed every Room, not its own** *(2026-07-07)* — the extension called
+   the account-wide `get_team_window_summary()` (no `account_email` filter), so a
+   member's "team at X%", reset countdown, and "your share" reflected whichever Room
+   wrote most recently across the whole DB, with unrelated Rooms' costs mixed into the
+   share denominator. Fixed: granted the Room-scoped `get_room_window_summary(text)` to
+   `anon`, revoked the leaky global one from `anon`, and pointed `fetchTeamSlice()` at
+   the Room-scoped RPC keyed on the device's Claude account email. Verified live —
+   forcing a competing Room's row made the old RPC collapse to `1 member / $12.34 / 99%`
+   while the fixed one held rashid's real `3 members / $40.74 / 51%`. See
+   `DATA_SOURCES.md` edge case 14.
+7. **Status bar and panel read 5h%/7d% from different sources** *(2026-07-07)* — the
+   panel's usage *bars* read the account percentages from this device's local log while
+   the status bar and the panel's "team at X%" sentence read them from the RPC, so the
+   two surfaces intermittently disagreed. Fixed with `effectiveFiveHourPct()` /
+   `effectiveSevenDayPct()` helpers that make the RPC value the single source of truth
+   for every surface (bars, pace tick, colour threshold, tooltip). See `DATA_SOURCES.md`
+   edge case 15.
 
 Additionally investigated and found to be **structural, shared, accepted
 limitations** (not bugs, documented in `DATA_SOURCES.md`):

@@ -2,7 +2,7 @@
   "name": "claude-team-usage",
   "displayName": "Claude Team Usage",
   "description": "See your share of a shared Claude Max plan's 5-hour and 7-day limits.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "iocod",
   "private": true,
   "engines": {

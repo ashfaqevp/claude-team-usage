@@ -741,3 +741,14 @@ $$;
 
 revoke all on function public.get_room_window_summary(text) from public, anon, authenticated;
 grant execute on function public.get_room_window_summary(text) to service_role;
+
+-- Issue-1 fix (migration `room_scoped_summary_for_anon`): the extension (anon key) must
+-- read only its OWN Room's window summary. Previously it called the global
+-- get_team_window_summary(), which sums EVERY Room in the DB together — contaminating a
+-- Room's 5h%, reset time, and per-member cost-share with unrelated Rooms' usage. The
+-- extension now calls get_room_window_summary(p_email) scoped to its Claude account
+-- email, so this RPC is granted to anon and the leaky global one is revoked from anon
+-- (nothing else calls it via anon; the dashboard reads the room-scoped RPC via
+-- service_role). Same "probe by email" tradeoff already accepted for get_room_name().
+grant execute on function public.get_room_window_summary(text) to anon;
+revoke execute on function public.get_team_window_summary() from anon;
