@@ -62,7 +62,7 @@ async function submit() {
         <p class="mt-2 text-sm text-muted-foreground">
           Request a new reset link from the sign-in page.
         </p>
-        <Button class="mt-6 w-full" variant="outline" @click="navigateTo('/')">Back to sign-in</Button>
+        <Button class="mt-6 w-full" variant="outline" @click="navigateTo('/login')">Back to sign-in</Button>
       </div>
 
       <form v-else class="text-left" @submit.prevent="submit">

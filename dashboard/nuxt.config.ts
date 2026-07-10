@@ -11,6 +11,13 @@ export default defineNuxtConfig({
   app: {
     head: {
       htmlAttrs: { class: 'dark' },
+      title: 'Claude Room',
+      link: [
+        // Modern browsers prefer the crisp SVG mark; favicon.ico (16/32/48) is
+        // the fallback for those that don't support SVG favicons.
+        { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' },
+        { rel: 'icon', type: 'image/x-icon', href: '/favicon.ico' },
+      ],
     },
   },
   icon: {

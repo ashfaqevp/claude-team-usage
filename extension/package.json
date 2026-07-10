@@ -1,10 +1,11 @@
 {
-  "name": "claude-team-usage",
-  "displayName": "Claude Team Usage",
-  "description": "See your share of a shared Claude Max plan's 5-hour and 7-day limits.",
+  "name": "claude-room",
+  "displayName": "Claude Room",
+  "description": "See your Room's share of a shared Claude Pro/Max plan's 5-hour and 7-day limits.",
   "version": "0.1.1",
-  "publisher": "iocod",
+  "publisher": "ashfaqe",
   "private": true,
+  "icon": "media/icon.png",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -15,16 +16,16 @@
     "commands": [
       {
         "command": "claudeTeamUsage.showUsage",
-        "title": "Claude Usage: Show my usage"
+        "title": "Claude Room: Show my usage"
       }
     ],
     "configuration": {
-      "title": "Claude Team Usage",
+      "title": "Claude Room",
       "properties": {
         "claudeUsage.supabaseUrl": {
           "type": "string",
           "default": "https://htrxdxtbrkdabrrqbpyr.supabase.co",
-          "description": "Supabase project URL to sync usage snapshots to. Defaults to the shared team project — leave empty to disable sync entirely (local features keep working without it)."
+          "description": "Supabase project URL to sync usage snapshots to. Defaults to the shared Room project — leave empty to disable sync entirely (local features keep working without it)."
         },
         "claudeUsage.supabaseAnonKey": {
           "type": "string",

@@ -10,3 +10,4 @@ pnpm-lock.yaml
 **/*.map
 **/*.ts
 **/.gitignore
+media/icon.svg

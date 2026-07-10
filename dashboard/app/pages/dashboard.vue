@@ -8,7 +8,7 @@ const user = useSupabaseUser()
 const supabase = useSupabaseClient()
 
 if (!user.value) {
-  await navigateTo('/')
+  await navigateTo('/login')
 }
 
 const { data, error, status, refresh } = await useFetch<MyRoomResponse>('/api/my-room', {
@@ -18,7 +18,7 @@ const { data, error, status, refresh } = await useFetch<MyRoomResponse>('/api/my
 
 // Session ended (sign-out elsewhere, expiry) while this page is open.
 watch(user, (u) => {
-  if (!u) navigateTo('/')
+  if (!u) navigateTo('/login')
 })
 
 let poll: ReturnType<typeof setInterval> | undefined
@@ -35,7 +35,7 @@ onUnmounted(() => {
 
 async function signOut() {
   await supabase.auth.signOut()
-  await navigateTo('/')
+  await navigateTo('/login')
 }
 
 async function handleRename(roomName: string) {
