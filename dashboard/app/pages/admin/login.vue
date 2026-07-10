@@ -47,7 +47,10 @@ async function handleSubmit() {
           <ShieldCheck class="size-4" />
           <span class="text-xs font-medium uppercase tracking-wide">Operator sign-in</span>
         </div>
-        <CardTitle class="text-lg">Claude Room — Admin</CardTitle>
+        <CardTitle class="flex items-center gap-2 text-lg">
+          <BrandLogo :size="26" />
+          <span class="text-sm font-medium text-muted-foreground">Admin</span>
+        </CardTitle>
         <CardDescription>Sign in with your admin email and password.</CardDescription>
       </CardHeader>
       <CardContent>

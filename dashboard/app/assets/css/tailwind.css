@@ -9,8 +9,21 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Fraunces — the brand wordmark face, self-hosted (latin subset, variable
+   weight axis) so the "Claude Room" lockup renders without an external font
+   request. Applied only to the wordmark via the `font-serif` utility, never to
+   body text. Extracted from the Logo Assets bundle. */
+@font-face {
+    font-family: 'Fraunces';
+    font-style: normal;
+    font-weight: 400 600;
+    font-display: swap;
+    src: url('../fonts/fraunces-latin.woff2') format('woff2');
+}
+
 @theme inline {
     --font-sans: 'Geist Variable', sans-serif;
+    --font-serif: 'Fraunces', ui-serif, Georgia, serif;
     --font-heading: var(--font-sans);
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);

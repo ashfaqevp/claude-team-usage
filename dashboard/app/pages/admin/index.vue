@@ -113,7 +113,10 @@ function formatLastActive(v: string | null) {
   <div v-else class="min-h-screen bg-background">
     <header class="border-b">
       <div class="mx-auto flex max-w-6xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8">
-        <span class="font-semibold tracking-tight">Claude Room — Admin</span>
+        <span class="flex items-center gap-2">
+          <BrandLogo :size="28" />
+          <span class="text-sm font-medium text-muted-foreground">Admin</span>
+        </span>
         <div class="flex items-center gap-3">
           <span class="hidden text-sm text-muted-foreground sm:inline">{{ user.email }}</span>
           <Button variant="ghost" size="sm" @click="signOut">

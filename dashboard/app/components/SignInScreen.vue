@@ -57,7 +57,7 @@ function resendClick() {
   <div class="flex min-h-screen items-center justify-center bg-background px-4">
     <div class="w-full max-w-sm">
       <div class="text-center">
-        <h1 class="text-2xl font-semibold tracking-tight">Claude Room</h1>
+        <BrandLogo :size="36" wordmark-class="text-2xl" class="justify-center" />
         <p class="mt-2 text-sm text-muted-foreground">
           See how your shared Claude account's usage is split across your Room.
         </p>
