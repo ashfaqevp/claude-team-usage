@@ -74,6 +74,21 @@ that's what the server routes match against.
   in `composables/useRoomModel.ts`, reused by every page and by `RoomView`. Auth
   pages (`login`, `reset-password`, `confirm`, `admin/login`) stay on a plain
   centered layout — no sidebar.
+- **Admin shell IS the owner shell.** Both `AppSidebar` and `AppTopbar` are
+  prop-driven, and the four page bodies are extracted into content components
+  (`RoomView` = Overview, `MembersContent`, `HistoryContent`) that take a
+  `MyRoomResponse` prop — so the owner pages and the admin room pages render the
+  **exact same UI**, differing only in the data source. `app/layouts/admin.vue`
+  feeds `AppSidebar` the identical Overview/Members/History/Settings nav, just
+  pointed at `/admin/room/[id]/*`, plus an "All rooms" link back to the picker;
+  on the `/admin` index it collapses to a rooms overview. `pages/admin/index.vue`
+  lists every Room; `pages/admin/room/[id]/{index,members,history,settings}.vue`
+  are the room-scoped views (Settings is read-only there — no admin rename
+  endpoint). The `[id]` param is the account email base64url-encoded
+  (`lib/adminRoom.ts`). Data: `composables/useAdminRooms.ts` (the list) and
+  `composables/useAdminRoomData.ts` (the selected Room via `/api/admin/room?email=`),
+  both shared-key so the layout, sidebar and pages dedupe to one request; the admin
+  layout owns the admin auth gate (401/403 → `/admin/login`) + 30s poll.
 
 ## Architecture
 

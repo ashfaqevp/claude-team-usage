@@ -297,8 +297,9 @@ useHead({
    template WITHOUT leaking into the neutral-gray dashboard/admin pages. Dark-only, to
    match the rest of the (forced-dark) product — the source design's light theme and
    its runtime theme toggle are intentionally dropped. Values are the design's dark
-   palette; serif -> self-hosted Fraunces, sans -> Geist, mono -> system stack, so no
-   external font request beyond what the app already loads. */
+   palette; type inherits the app-wide stack (serif -> Newsreader, sans -> IBM Plex
+   Sans, mono -> IBM Plex Mono), so no external font request beyond what the app
+   already loads. */
 .cr-landing {
   --bg: #171613;
   --bg2: #1E1D19;

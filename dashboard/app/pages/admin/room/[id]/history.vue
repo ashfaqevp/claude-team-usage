@@ -1,7 +1,7 @@
 <script setup lang="ts">
-definePageMeta({ layout: 'dashboard' })
+definePageMeta({ layout: 'admin' })
 
-const { data, error, status, refresh } = useMyRoom()
+const { data, error, status, refresh } = useAdminRoomData()
 </script>
 
 <template>
@@ -12,7 +12,12 @@ const { data, error, status, refresh } = useMyRoom()
     </div>
 
     <RoomSkeleton v-if="status === 'pending' && !data" />
-    <ErrorCard v-else-if="error" :message="error.statusMessage || error.message" @retry="refresh()" />
+    <ErrorCard
+      v-else-if="error"
+      title="Couldn't load this Room"
+      :message="(error as any).statusMessage || error.message"
+      @retry="refresh()"
+    />
     <HistoryContent v-else-if="data" :data="data" />
   </div>
 </template>
