@@ -47,6 +47,34 @@ enabled in Supabase Dashboard → Authentication → Providers, so `auth.signInW
 works. Supabase stores the provider's verified primary email as `auth.users.email` —
 that's what the server routes match against.
 
+## Design system & shell
+
+- **Theme**: default-dark with an opt-in light theme (warm-paper). Tokens live in
+  `app/assets/css/tailwind.css` — the design palette is defined once under `:root`
+  (light) and `.dark` (dark), and the shadcn semantic tokens
+  (`--background`/`--card`/`--primary`/`--border`…) are remapped onto it so the
+  shadcn `ui/*` primitives inherit the look. The extra design tokens
+  (`--surface`, `--ink-2/3`, `--accent-soft`, `--track`, `--mint/sky/clay/plum`,
+  `shadow-card`) are exposed as Tailwind utilities via `@theme inline`. The SSR
+  html carries `class="dark"`; an inline head script in `nuxt.config.ts` applies a
+  saved `localStorage['cr-theme']` before first paint (no FOUC), and
+  `composables/useTheme.ts` is the toggle's single source of truth. Chart.js can't
+  read CSS vars, so `composables/useChartTheme.ts` feeds the charts theme-aware
+  grid/tick/tooltip colors.
+- **Fonts**: IBM Plex Sans (body/UI), IBM Plex Mono (`.mono` / `font-mono` —
+  numbers & labels), Newsreader (`.serif` / `font-serif` — display & the wordmark),
+  loaded once via the Google Fonts import at the top of `tailwind.css`.
+- **Shell & routing**: authed owner pages use the `dashboard` layout
+  (`app/layouts/dashboard.vue` = `AppSidebar` + `AppTopbar` + routed page). That
+  layout owns the auth gate and 30s poll. Nav pages: `pages/dashboard.vue`
+  (Overview), `pages/members.vue`, `pages/history.vue`, `pages/settings.vue` — each
+  sets `definePageMeta({ layout: 'dashboard' })` and reads room data from
+  `composables/useMyRoom.ts` (fixed `key: 'my-room'` → one shared request/payload).
+  Derivations (member cards + colors, donut, timeline, daily rollup, 5h pace) live
+  in `composables/useRoomModel.ts`, reused by every page and by `RoomView`. Auth
+  pages (`login`, `reset-password`, `confirm`, `admin/login`) stay on a plain
+  centered layout — no sidebar.
+
 ## Architecture
 
 - **Auth**: `@nuxtjs/supabase` (wraps `@supabase/ssr`), configured with `redirect:
@@ -77,17 +105,18 @@ that's what the server routes match against.
   - The old, single-Room `server/api/team-summary.get.ts` (no auth, no Room scoping,
     read the *global* `get_team_window_summary()`/views) was deleted in Phase 8 — it
     would have been an unauthenticated cross-tenant read once multiple Rooms exist.
-- **`app/pages/index.vue`**: auth gate + top bar + polling (`/api/my-room` every 30s
-  while signed in) + loading/error states. Delegates the actual Room UI to
-  **`app/components/RoomView.vue`**, which takes the `/api/my-room` payload as a prop
-  and renders the header (editable Room name, tracked email, 5h/7d bars + countdowns,
-  total window cost), member grid (slice/cost/tokens/model/last-seen, cool→amber→red by
-  slice, dimmed if idle >30 min), insights strip, and the daily activity table
-  (`daily_usage` rows carry one row per `(day, user_name)` — rolled up to one row per
-  day client-side). It emits `rename` up to the page, which POSTs
-  `/api/room-name`. This split exists so Phase 9's `/admin` page can reuse `RoomView`
-  unchanged, feeding it `/api/admin/room?email=...` instead.
-- **Empty vs error vs first-login-naming** are distinct states in `RoomView`/`index.vue`:
+- **`app/pages/index.vue`** is the public marketing landing (own scoped warm-paper
+  palette); it forwards an OAuth return to `/dashboard`. The **auth gate + 30s poll**
+  now live in the `dashboard` layout, not a page.
+- **`app/components/RoomView.vue`** is the Overview content (shell-agnostic): given the
+  `/api/my-room` payload it renders the 5h pace strip + 7d card (`PaceHero`), the member
+  grid (`MemberCard` — slice/cost/tokens/model/context, dimmed if idle >30 min), the
+  share donut + stacked daily chart, and a recent-history table + slice-estimate
+  footnote. It emits `rename` (owner only; POSTs `/api/room-name`) — `pages/dashboard.vue`
+  handles it, and `/admin` reuses `RoomView` with `:allow-rename="false"`, feeding it
+  `/api/admin/room?email=...`. Heavier derivations sit in `useRoomModel`, so the
+  dedicated `members`/`history` pages compute the same numbers without duplicating logic.
+- **Empty vs error vs first-login-naming** are distinct states in `RoomView`:
   no history at all (or a brand-new Room) shows the "No usage yet" empty card; a fetch
   failure shows a separate error card with retry; a Room with history but no
   `rooms.room_name` yet shows a "Name your Room" prompt banner.

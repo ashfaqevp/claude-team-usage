@@ -1,9 +1,10 @@
-// Mirrors the --series-1..8 custom properties in assets/css/tailwind.css (dark-mode
-// values - this app forces the dark theme, see nuxt.config.ts). Duplicated here
-// because Chart.js draws to <canvas>, whose fillStyle can't resolve CSS custom
-// properties; HTML swatches (legends, heatmap cells) use the CSS vars directly via
-// SERIES_CSS_VARS instead, so a future theme edit only needs to touch one file for
-// the DOM side and this file for the canvas side.
+// Mirrors the --series-1..8 custom properties in assets/css/tailwind.css. Chart.js
+// draws to <canvas>, whose fillStyle can't resolve CSS custom properties, so the
+// per-member hues are duplicated here for the canvas side; HTML swatches (legends,
+// card accents) use the CSS vars directly via SERIES_CSS_VARS. These are the
+// dark-surface values — the product defaults to dark, and they read acceptably on
+// the light warm-paper surface too; the theme-dependent chart chrome (grid/tick/
+// tooltip) is handled separately in composables/useChartTheme.ts.
 export const SERIES_HEX = [
   '#3987e5', // blue
   '#199e70', // aqua

@@ -54,16 +54,16 @@ function resendClick() {
 </script>
 
 <template>
-  <div class="flex min-h-screen items-center justify-center bg-background px-4">
-    <div class="w-full max-w-sm">
+  <div class="flex min-h-screen items-center justify-center bg-background px-4 py-10">
+    <div class="w-full max-w-sm rounded-2xl border border-border bg-surface p-8 shadow-card">
       <div class="text-center">
         <BrandLogo :size="36" wordmark-class="text-2xl" class="justify-center" />
-        <p class="mt-2 text-sm text-muted-foreground">
+        <p class="mt-3 text-sm text-muted-foreground">
           See how your shared Claude account's usage is split across your Room.
         </p>
       </div>
 
-      <form class="mt-8 space-y-4 text-left" @submit.prevent="submit">
+      <form class="mt-7 space-y-4 text-left" @submit.prevent="submit">
         <div class="space-y-1.5">
           <label for="email" class="text-sm font-medium">Email</label>
           <Input id="email" v-model="email" type="email" autocomplete="username" required />

@@ -1,55 +1,60 @@
 {
-  "name": "claude-room",
-  "displayName": "Claude Room",
-  "description": "See your Room's share of a shared Claude Pro/Max plan's 5-hour and 7-day limits.",
-  "version": "0.1.1",
-  "publisher": "ashfaqe",
-  "private": true,
-  "icon": "media/icon.png",
-  "engines": {
-    "vscode": "^1.85.0"
-  },
-  "categories": ["Other"],
-  "activationEvents": ["onStartupFinished"],
-  "main": "./out/extension.js",
-  "contributes": {
-    "commands": [
-      {
-        "command": "claudeTeamUsage.showUsage",
-        "title": "Claude Room: Show my usage"
-      }
+    "name": "claude-room",
+    "displayName": "Claude Room",
+    "description": "See your Room's share of a shared Claude Pro/Max plan's 5-hour and 7-day limits.",
+    "version": "0.1.1",
+    "publisher": "ashfaqe",
+    "private": true,
+    "icon": "media/icon.png",
+    "engines": {
+        "vscode": "^1.85.0"
+    },
+    "categories": [
+        "Other"
     ],
-    "configuration": {
-      "title": "Claude Room",
-      "properties": {
-        "claudeUsage.supabaseUrl": {
-          "type": "string",
-          "default": "https://htrxdxtbrkdabrrqbpyr.supabase.co",
-          "description": "Supabase project URL to sync usage snapshots to. Defaults to the shared Room project — leave empty to disable sync entirely (local features keep working without it)."
-        },
-        "claudeUsage.supabaseAnonKey": {
-          "type": "string",
-          "default": "sb_publishable_-0NlO4LiFuIAaMgomMTzBQ_oW8brIVp",
-          "description": "Supabase anon/publishable key used to sync usage snapshots. This is a publishable key (insert-only, aggregates-only RPC) — safe to ship as a default. Leave empty to disable sync entirely."
-        },
-        "claudeUsage.userNameOverride": {
-          "type": "string",
-          "default": "",
-          "description": "Optional label to identify you in shared usage data, instead of your git identity or a generated device id."
+    "activationEvents": [
+        "onStartupFinished"
+    ],
+    "main": "./out/extension.js",
+    "contributes": {
+        "commands": [
+            {
+                "command": "claudeTeamUsage.showUsage",
+                "title": "Claude Room: Show my usage"
+            }
+        ],
+        "configuration": {
+            "title": "Claude Room",
+            "properties": {
+                "claudeUsage.supabaseUrl": {
+                    "type": "string",
+                    "default": "https://htrxdxtbrkdabrrqbpyr.supabase.co",
+                    "description": "Supabase project URL to sync usage snapshots to. Defaults to the shared Room project — leave empty to disable sync entirely (local features keep working without it)."
+                },
+                "claudeUsage.supabaseAnonKey": {
+                    "type": "string",
+                    "default": "sb_publishable_-0NlO4LiFuIAaMgomMTzBQ_oW8brIVp",
+                    "description": "Supabase anon/publishable key used to sync usage snapshots. This is a publishable key (insert-only, aggregates-only RPC) — safe to ship as a default. Leave empty to disable sync entirely."
+                },
+                "claudeUsage.userNameOverride": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Optional label to identify you in shared usage data, instead of your git identity or a generated device id."
+                }
+            }
         }
-      }
-    }
-  },
-  "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
-    "test": "tsc -p ./ && node scripts/verify-edge-cases.js",
-    "package": "pnpm dlx @vscode/vsce package"
-  },
-  "devDependencies": {
-    "@types/node": "^20.11.0",
-    "@types/vscode": "^1.85.0",
-    "typescript": "^5.4.0"
-  }
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./",
+        "test": "tsc -p ./ && node scripts/verify-edge-cases.js",
+        "package": "pnpm dlx @vscode/vsce package"
+    },
+    "devDependencies": {
+        "@types/node": "^20.11.0",
+        "@types/vscode": "^1.85.0",
+        "typescript": "^5.4.0"
+    },
+    "license": "MIT"
 }

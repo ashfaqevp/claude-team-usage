@@ -1,27 +1,26 @@
 <script setup lang="ts">
-import { CalendarDays } from 'lucide-vue-next'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { heatLevelColor } from '@/lib/chartColors'
+import { formatCost } from '@/lib/format'
 
 const props = defineProps<{
   // Chronological, oldest first.
   days: Array<{ day: string, label: string, cost: number }>
 }>()
 
-function formatCost(v: number) {
-  return `$${v.toFixed(2)}`
+// Warm accent ramp built off the theme tokens, so the heatmap stays cohesive with
+// the brand and recolors with the light/dark toggle. Level 0 = the bare track.
+function levelColor(level: number) {
+  if (level <= 0) return 'var(--track)'
+  return `color-mix(in srgb, var(--accent) ${Math.min(100, level * 22)}%, var(--track))`
 }
 
 function toUtcDate(day: string) {
   return new Date(`${day}T00:00:00Z`)
 }
-
 function addDays(d: Date, n: number) {
   const r = new Date(d)
   r.setUTCDate(r.getUTCDate() + n)
   return r
 }
-
 function isoDay(d: Date) {
   return d.toISOString().slice(0, 10)
 }
@@ -41,9 +40,6 @@ const costByDay = computed(() => new Map(props.days.map(d => [d.day, d.cost])))
 
 interface Cell { date: Date, day: string, cost: number, level: number }
 
-// A GitHub-style grid: columns are weeks (Sun -> Sat top to bottom), padded out
-// to full weeks at both ends so the grid lines up like the real contribution
-// graph, even though our data range rarely starts on a Sunday.
 const weeks = computed(() => {
   if (!props.days.length) return [] as Array<Array<Cell | null>>
   const sortedDays = [...props.days].map(d => d.day).sort()
@@ -99,52 +95,50 @@ const busiestDay = computed(() => {
 </script>
 
 <template>
-  <Card class="shadow-sm">
-    <CardHeader>
-      <CardTitle class="flex items-center gap-1.5 text-base">
-        <CalendarDays class="size-4 text-muted-foreground" />
-        Room rhythm
-      </CardTitle>
-      <CardDescription>When the Room tends to be busy, by day</CardDescription>
-    </CardHeader>
-    <CardContent>
-      <p v-if="!days.length" class="py-8 text-center text-sm text-muted-foreground">
-        No activity yet.
-      </p>
-      <template v-else>
-        <div class="flex gap-2 overflow-x-auto pb-1">
-          <div class="grid shrink-0 grid-rows-7 gap-[3px] pt-[18px] text-[9px] leading-none text-muted-foreground">
-            <span v-for="(lbl, i) in weekdayLabels" :key="i" class="flex h-[11px] items-center">{{ lbl }}</span>
+  <div class="rounded-2xl border border-border bg-surface p-5 shadow-card">
+    <h3 class="text-[14.5px] font-semibold">Room rhythm</h3>
+    <p class="mt-0.5 text-[12px] text-ink-3">When the Room tends to be busy, by day</p>
+
+    <p v-if="!days.length" class="py-10 text-center text-sm text-ink-3">No activity yet.</p>
+
+    <template v-else>
+      <div class="mt-4 flex gap-2 overflow-x-auto pb-1">
+        <div class="grid shrink-0 grid-rows-7 gap-[3px] pt-[18px] text-[9px] leading-none text-ink-3">
+          <span v-for="(lbl, i) in weekdayLabels" :key="i" class="flex h-[11px] items-center">{{ lbl }}</span>
+        </div>
+        <div>
+          <div class="mb-1 grid auto-cols-[11px] grid-flow-col gap-[3px] text-[9px] leading-none text-ink-3">
+            <span v-for="(m, i) in monthLabels" :key="i">{{ m }}</span>
           </div>
-          <div>
-            <div class="mb-1 grid auto-cols-[11px] grid-flow-col gap-[3px] text-[9px] leading-none text-muted-foreground">
-              <span v-for="(m, i) in monthLabels" :key="i">{{ m }}</span>
-            </div>
-            <div class="grid grid-flow-col grid-rows-7 gap-[3px]">
-              <template v-for="(week, wi) in weeks" :key="wi">
-                <div
-                  v-for="(cell, di) in week"
-                  :key="di"
-                  class="size-[11px] rounded-[2px] ring-1 ring-inset ring-white/5"
-                  :class="{ 'opacity-0': !cell }"
-                  :style="cell ? { backgroundColor: heatLevelColor(cell.level) } : undefined"
-                  :title="cell ? cellTitle(cell) : undefined"
-                />
-              </template>
-            </div>
+          <div class="grid grid-flow-col grid-rows-7 gap-[3px]">
+            <template v-for="(week, wi) in weeks" :key="wi">
+              <div
+                v-for="(cell, di) in week"
+                :key="di"
+                class="size-[11px] rounded-[3px] ring-1 ring-inset ring-black/5 dark:ring-white/5"
+                :class="{ 'opacity-0': !cell }"
+                :style="cell ? { backgroundColor: levelColor(cell.level) } : undefined"
+                :title="cell ? cellTitle(cell) : undefined"
+              />
+            </template>
           </div>
         </div>
-        <div class="mt-3 flex items-center justify-between text-xs text-muted-foreground">
-          <span v-if="busiestDay">
-            Busiest day: <span class="text-foreground">{{ busiestDay.label }}</span> ({{ formatCost(busiestDay.cost) }})
-          </span>
-          <span class="flex items-center gap-1">
-            Less
-            <span v-for="lvl in [0, 1, 2, 3, 4]" :key="lvl" class="size-[10px] rounded-[2px] ring-1 ring-inset ring-white/5" :style="{ backgroundColor: heatLevelColor(lvl) }" />
-            More
-          </span>
-        </div>
-      </template>
-    </CardContent>
-  </Card>
+      </div>
+      <div class="mt-3 flex items-center justify-between text-xs text-ink-3">
+        <span v-if="busiestDay">
+          Busiest day: <span class="text-ink">{{ busiestDay.label }}</span> ({{ formatCost(busiestDay.cost) }})
+        </span>
+        <span class="flex items-center gap-1">
+          Less
+          <span
+            v-for="lvl in [0, 1, 2, 3, 4]"
+            :key="lvl"
+            class="size-[10px] rounded-[3px] ring-1 ring-inset ring-black/5 dark:ring-white/5"
+            :style="{ backgroundColor: levelColor(lvl) }"
+          />
+          More
+        </span>
+      </div>
+    </template>
+  </div>
 </template>

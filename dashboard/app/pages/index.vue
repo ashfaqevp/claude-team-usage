@@ -331,7 +331,7 @@ useHead({
 
 .cr-landing :deep(.mono),
 .cr-landing .mono {
-  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
 }
 .cr-landing .serif {
   font-family: var(--font-serif);

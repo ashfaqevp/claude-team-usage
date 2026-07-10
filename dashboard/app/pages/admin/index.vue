@@ -1,16 +1,14 @@
 <script setup lang="ts">
 import type { AdminRoomListItem } from '@/types/admin'
 import type { MyRoomResponse } from '@/types/my-room'
-import { Card, CardContent } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { CircleAlert, LogOut, Inbox } from '@lucide/vue'
+import { CircleAlert, LogOut, Inbox, Sun, Moon, ChevronRight } from '@lucide/vue'
 
 const user = useSupabaseUser()
 const supabase = useSupabaseClient()
 const router = useRouter()
+const { isDark, toggle } = useTheme()
 
 const { data: rooms, error: roomsError, status: roomsStatus, refresh: refreshRooms } = await useFetch<AdminRoomListItem[]>('/api/admin/rooms', {
   key: 'admin-rooms',
@@ -110,15 +108,23 @@ function formatLastActive(v: string | null) {
     <Skeleton class="h-8 w-48" />
   </div>
 
-  <div v-else class="min-h-screen bg-background">
-    <header class="border-b">
+  <div v-else class="min-h-screen bg-background text-foreground">
+    <header class="sticky top-0 z-10 border-b border-border bg-[color-mix(in_srgb,var(--bg)_88%,transparent)] backdrop-blur-md">
       <div class="mx-auto flex max-w-6xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8">
-        <span class="flex items-center gap-2">
+        <span class="flex items-center gap-2.5">
           <BrandLogo :size="28" />
-          <span class="text-sm font-medium text-muted-foreground">Admin</span>
+          <span class="mono rounded-md border border-border px-2 py-0.5 text-[11px] uppercase tracking-wide text-ink-3">Admin</span>
         </span>
         <div class="flex items-center gap-3">
-          <span class="hidden text-sm text-muted-foreground sm:inline">{{ user.email }}</span>
+          <button
+            class="flex size-[34px] items-center justify-center rounded-lg border border-border bg-surface text-ink-2 transition-colors hover:text-ink"
+            :aria-label="isDark ? 'Switch to light theme' : 'Switch to dark theme'"
+            @click="toggle"
+          >
+            <Sun v-if="isDark" class="size-4" />
+            <Moon v-else class="size-4" />
+          </button>
+          <span class="hidden text-sm text-ink-2 sm:inline">{{ user.email }}</span>
           <Button variant="ghost" size="sm" @click="signOut">
             <LogOut class="size-3.5" />
             Sign out
@@ -129,78 +135,71 @@ function formatLastActive(v: string | null) {
 
     <main class="mx-auto max-w-6xl space-y-8 px-4 py-8 sm:px-6 lg:px-8">
       <div>
-        <h2 class="mb-3 text-sm font-medium text-muted-foreground">Rooms</h2>
+        <div class="mb-3.5 flex items-center justify-between gap-3">
+          <h2 class="text-[15px] font-semibold">
+            Rooms
+            <span v-if="sortedRooms.length" class="mono text-[12px] font-normal text-ink-3">· {{ sortedRooms.length }}</span>
+          </h2>
+          <span class="text-[12px] text-ink-3">Select a Room to inspect it</span>
+        </div>
 
         <div v-if="roomsStatus === 'pending' && !rooms" class="space-y-2">
-          <Skeleton class="h-10 w-full rounded-lg" />
-          <Skeleton class="h-10 w-full rounded-lg" />
-          <Skeleton class="h-10 w-full rounded-lg" />
+          <Skeleton class="h-14 w-full rounded-xl" />
+          <Skeleton class="h-14 w-full rounded-xl" />
+          <Skeleton class="h-14 w-full rounded-xl" />
         </div>
 
-        <div v-else-if="roomsError" class="flex flex-col items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 py-12 text-center">
-          <CircleAlert class="size-8 text-destructive" />
-          <p class="font-medium">Couldn't load Rooms</p>
-          <p class="text-sm text-muted-foreground">{{ roomsError.statusMessage || roomsError.message }}</p>
-          <Button variant="outline" size="sm" class="mt-2" @click="refreshRooms()">Try again</Button>
+        <ErrorCard
+          v-else-if="roomsError"
+          title="Couldn't load Rooms"
+          :message="roomsError.statusMessage || roomsError.message"
+          @retry="refreshRooms()"
+        />
+
+        <div
+          v-else-if="!sortedRooms.length"
+          class="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-border bg-surface py-16 text-center shadow-card"
+        >
+          <Inbox class="size-8 text-ink-3" />
+          <p class="font-medium">No Rooms yet</p>
+          <p class="text-sm text-ink-3">A Room appears once its first usage snapshot is synced.</p>
         </div>
 
-        <Card v-else-if="!sortedRooms.length" class="border-dashed">
-          <CardContent class="flex flex-col items-center gap-2 py-12 text-center">
-            <Inbox class="size-8 text-muted-foreground" />
-            <p class="font-medium">No Rooms yet</p>
-            <p class="text-sm text-muted-foreground">A Room appears once its first usage snapshot is synced.</p>
-          </CardContent>
-        </Card>
-
-        <Card v-else class="overflow-hidden py-0">
-          <div class="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Room</TableHead>
-                  <TableHead>Members</TableHead>
-                  <TableHead>Last active</TableHead>
-                  <TableHead>5h</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                <TableRow
-                  v-for="room in sortedRooms"
-                  :key="room.claude_email"
-                  class="cursor-pointer"
-                  :class="{ 'bg-muted/50': selectedEmail === room.claude_email }"
-                  @click="selectRoom(room.claude_email)"
-                >
-                  <TableCell>
-                    <div class="font-medium">{{ room.room_name || room.claude_email }}</div>
-                    <div v-if="room.room_name" class="text-xs text-muted-foreground">{{ room.claude_email }}</div>
-                  </TableCell>
-                  <TableCell class="tabular-nums">{{ room.member_count }}</TableCell>
-                  <TableCell>{{ formatLastActive(room.last_active) }}</TableCell>
-                  <TableCell><Badge variant="secondary">{{ formatPct(room.five_hour_pct) }}</Badge></TableCell>
-                </TableRow>
-              </TableBody>
-            </Table>
-          </div>
-        </Card>
+        <div v-else class="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+          <button
+            v-for="room in sortedRooms"
+            :key="room.claude_email"
+            class="flex items-center justify-between gap-3 rounded-xl border bg-surface px-4 py-3 text-left shadow-card transition-colors"
+            :class="selectedEmail === room.claude_email
+              ? 'border-primary ring-1 ring-primary/40'
+              : 'border-border hover:border-primary/40'"
+            @click="selectRoom(room.claude_email)"
+          >
+            <div class="min-w-0">
+              <div class="truncate text-sm font-medium">{{ room.room_name || room.claude_email }}</div>
+              <div class="mt-0.5 truncate text-xs text-ink-3">
+                {{ room.member_count }} member{{ room.member_count === 1 ? '' : 's' }} · {{ formatLastActive(room.last_active) }}
+              </div>
+            </div>
+            <div class="flex shrink-0 items-center gap-1.5">
+              <span class="mono rounded-md bg-accent-soft px-2 py-0.5 text-[12px] font-medium text-accent-ink">{{ formatPct(room.five_hour_pct) }}</span>
+              <ChevronRight class="size-4 text-ink-3" />
+            </div>
+          </button>
+        </div>
       </div>
 
       <div v-if="selectedEmail">
-        <h2 class="mb-3 text-sm font-medium text-muted-foreground">{{ selectedEmail }}</h2>
+        <h2 class="mono mb-3.5 text-[13px] text-ink-3">{{ selectedEmail }}</h2>
 
-        <div v-if="roomLoading && !roomData" class="space-y-8">
-          <Skeleton class="h-40 w-full rounded-lg" />
-          <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <Skeleton v-for="i in 3" :key="i" class="h-32 rounded-lg" />
-          </div>
-        </div>
+        <RoomSkeleton v-if="roomLoading && !roomData" />
 
-        <div v-else-if="roomError" class="flex flex-col items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 py-16 text-center">
-          <CircleAlert class="size-8 text-destructive" />
-          <p class="font-medium">Couldn't load this Room</p>
-          <p class="text-sm text-muted-foreground">{{ roomError }}</p>
-          <Button variant="outline" size="sm" class="mt-2" @click="selectRoom(selectedEmail)">Try again</Button>
-        </div>
+        <ErrorCard
+          v-else-if="roomError"
+          title="Couldn't load this Room"
+          :message="roomError"
+          @retry="selectRoom(selectedEmail)"
+        />
 
         <RoomView v-else-if="roomData" :data="roomData" :allow-rename="false" />
       </div>

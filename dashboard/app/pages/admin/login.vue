@@ -40,8 +40,8 @@ async function handleSubmit() {
 </script>
 
 <template>
-  <div class="flex min-h-screen items-center justify-center bg-muted/30 px-4">
-    <Card class="w-full max-w-sm">
+  <div class="flex min-h-screen items-center justify-center bg-background px-4 py-10">
+    <Card class="w-full max-w-sm shadow-card">
       <CardHeader>
         <div class="flex items-center gap-2 text-muted-foreground">
           <ShieldCheck class="size-4" />

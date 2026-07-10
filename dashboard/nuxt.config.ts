@@ -6,8 +6,10 @@ export default defineNuxtConfig({
   devtools: { enabled: true },
   modules: ['@nuxtjs/supabase', '@nuxt/icon'],
   css: ['~/assets/css/tailwind.css'],
-  // This is a dark-only product by design — no light-mode toggle exists, so the
-  // theme is forced here rather than left to prefers-color-scheme.
+  // Default-dark product with an opt-in light theme (see app/composables/useTheme.ts).
+  // The html gets `class="dark"` at SSR so the default render is dark; the inline
+  // head script below runs before first paint and flips to light only when the
+  // visitor has previously chosen it (localStorage 'cr-theme'), avoiding any FOUC.
   app: {
     head: {
       htmlAttrs: { class: 'dark' },
@@ -17,6 +19,15 @@ export default defineNuxtConfig({
         // the fallback for those that don't support SVG favicons.
         { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' },
         { rel: 'icon', type: 'image/x-icon', href: '/favicon.ico' },
+      ],
+      script: [
+        {
+          // Runs pre-paint: honour a saved theme choice without a flash of the
+          // wrong palette. Defaults to dark (matches the SSR html class).
+          innerHTML:
+            "(function(){try{var t=localStorage.getItem('cr-theme');document.documentElement.classList.toggle('dark',t!=='light');}catch(e){}})()",
+          tagPosition: 'head',
+        },
       ],
     },
   },

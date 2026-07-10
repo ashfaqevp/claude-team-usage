@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import type { TooltipItem } from 'chart.js'
 import { Bar } from 'vue-chartjs'
-import { TrendingUp } from 'lucide-vue-next'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 
 const props = defineProps<{
   labels: string[]
   series: Array<{ userName: string, colorHex: string, data: number[] }>
+  title?: string
+  subtitle?: string
 }>()
+
+const theme = useChartTheme()
 
 const chartData = computed(() => ({
   labels: props.labels,
@@ -15,15 +17,15 @@ const chartData = computed(() => ({
     label: s.userName,
     data: s.data,
     backgroundColor: s.colorHex,
-    borderColor: '#171717',
-    borderWidth: 2,
-    borderRadius: 3,
-    maxBarThickness: 24,
+    borderColor: theme.value.surface,
+    borderWidth: 1.5,
+    borderRadius: 4,
+    maxBarThickness: 26,
     stack: 'total',
   })),
 }))
 
-const chartOptions = {
+const chartOptions = computed(() => ({
   responsive: true,
   maintainAspectRatio: false,
   interaction: { mode: 'index' as const, intersect: false },
@@ -31,54 +33,56 @@ const chartOptions = {
     x: {
       stacked: true,
       grid: { display: false },
-      ticks: { color: '#898781' },
+      border: { display: false },
+      ticks: { color: theme.value.tick, font: { size: 11 } },
     },
     y: {
       stacked: true,
-      grid: { color: 'rgba(255,255,255,0.08)' },
+      grid: { color: theme.value.grid },
+      border: { display: false },
       ticks: {
-        color: '#898781',
+        color: theme.value.tick,
+        font: { size: 11 },
         callback: (v: number | string) => `$${v}`,
       },
     },
   },
   plugins: {
-    legend: {
-      position: 'bottom' as const,
-      labels: { color: '#c3c2b7', boxWidth: 10, boxHeight: 10, usePointStyle: true, pointStyle: 'circle' },
-    },
+    legend: { display: false },
     tooltip: {
-      backgroundColor: '#171717',
-      titleColor: '#ffffff',
-      bodyColor: '#c3c2b7',
-      borderColor: 'rgba(255,255,255,0.1)',
+      backgroundColor: theme.value.tooltipBg,
+      titleColor: theme.value.tooltipTitle,
+      bodyColor: theme.value.tooltipBody,
+      borderColor: theme.value.tooltipBorder,
       borderWidth: 1,
       padding: 8,
       callbacks: {
-        label: (ctx: TooltipItem<'bar'>) =>
-          ` ${ctx.dataset.label}: $${(ctx.parsed.y ?? 0).toFixed(2)}`,
+        label: (ctx: TooltipItem<'bar'>) => ` ${ctx.dataset.label}: $${(ctx.parsed.y ?? 0).toFixed(2)}`,
       },
     },
   },
-}
+}))
 </script>
 
 <template>
-  <Card class="shadow-sm">
-    <CardHeader>
-      <CardTitle class="flex items-center gap-1.5 text-base">
-        <TrendingUp class="size-4 text-muted-foreground" />
-        Daily usage over time
-      </CardTitle>
-      <CardDescription>Total trend and rough composition across members, per day</CardDescription>
-    </CardHeader>
-    <CardContent>
-      <p v-if="!labels.length" class="py-8 text-center text-sm text-muted-foreground">
-        No usage recorded yet.
-      </p>
-      <div v-else class="h-64">
-        <Bar :data="chartData" :options="chartOptions" />
+  <div class="rounded-2xl border border-border bg-surface p-5 shadow-card">
+    <div class="flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <h3 class="text-[14.5px] font-semibold">{{ title ?? 'Daily activity' }}</h3>
+        <p class="mt-0.5 text-[12px] text-ink-3">{{ subtitle ?? 'API-equivalent cost, stacked by member' }}</p>
       </div>
-    </CardContent>
-  </Card>
+      <div class="flex flex-wrap gap-3 text-[11px] text-ink-2">
+        <span v-for="s in series" :key="s.userName" class="flex items-center gap-1.5">
+          <span class="size-2 rounded-[2px]" :style="{ background: s.colorHex }" />{{ s.userName }}
+        </span>
+      </div>
+    </div>
+
+    <p v-if="!labels.length" class="py-10 text-center text-sm text-ink-3">
+      No usage recorded yet.
+    </p>
+    <div v-else class="mt-5 h-56">
+      <Bar :data="chartData" :options="chartOptions" />
+    </div>
+  </div>
 </template>

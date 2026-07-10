@@ -51,8 +51,9 @@ async function submit() {
 </script>
 
 <template>
-  <div class="flex min-h-screen items-center justify-center bg-background px-4">
-    <div class="w-full max-w-sm text-center">
+  <div class="flex min-h-screen items-center justify-center bg-background px-4 py-10">
+    <div class="w-full max-w-sm rounded-2xl border border-border bg-surface p-8 text-center shadow-card">
+      <BrandLogo :size="32" wordmark-class="text-xl" class="mb-6 justify-center" />
       <div v-if="stage === 'verifying'" class="text-sm text-muted-foreground">
         Verifying reset link…
       </div>
