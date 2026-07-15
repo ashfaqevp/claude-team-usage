@@ -63,6 +63,12 @@ importers:
       '@iconify-json/lucide':
         specifier: ^1.2.116
         version: 1.2.116
+      '@iconify-json/selfhst':
+        specifier: ^1.2.7
+        version: 1.2.7
+      '@iconify-json/simple-icons':
+        specifier: ^1.2.90
+        version: 1.2.90
       '@supabase/supabase-js':
         specifier: ^2.110.0
         version: 2.110.0
@@ -516,6 +522,12 @@ packages:
 
   '@iconify-json/lucide@1.2.116':
     resolution: {integrity: sha512-mbwPmiUXaZyLMSeQOxiTqz2fmZikD9qiGnMBiev47UUNY9uGCEgMg9iUYwaJzCtJTDtAIyK4vokfIpqsVorgSw==}
+
+  '@iconify-json/selfhst@1.2.7':
+    resolution: {integrity: sha512-/1ppAlRygQocSwW/J7EPohyOUQCqD8MymUBYSn18Cewiz6yR846DHbGEcd1bqg3p+OcgOHE4XO3IzgqkMgdm+Q==}
+
+  '@iconify-json/simple-icons@1.2.90':
+    resolution: {integrity: sha512-zt2o2ZvQpHVvZJARIkZ51RnaHY2oqcPJMvHE+mVnxkSr+c33fnX4gciiXu+wyX5ei+s0qbVX1wD0DWBbaGBYMA==}
 
   '@iconify/collections@1.0.706':
     resolution: {integrity: sha512-S6eOXR2QtzNG9CeTtt/ibkQiBmCwY8489qkHjg52NzYgaVBlUGhlse5FfBck03zhC+/XrtTKfH+pWq1nDaLDnQ==}
@@ -5122,6 +5134,14 @@ snapshots:
   '@humanwhocodes/retry@0.4.3': {}
 
   '@iconify-json/lucide@1.2.116':
+    dependencies:
+      '@iconify/types': 2.0.0
+
+  '@iconify-json/selfhst@1.2.7':
+    dependencies:
+      '@iconify/types': 2.0.0
+
+  '@iconify-json/simple-icons@1.2.90':
     dependencies:
       '@iconify/types': 2.0.0
 

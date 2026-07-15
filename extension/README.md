@@ -1,86 +1,147 @@
-# Claude Team Usage
+# Claude Room
 
-See your share of a shared Claude Max plan's 5-hour and 7-day rate limits, when
-multiple developers use the same account from separate machines.
+**Know your share of a shared Claude account.**
 
-## What it does
+When several people share one Claude Max or Team account, Claude Code's status line shows
+everyone the same number. It tells you the account is at 72% of its 5-hour limit — it
+never tells you whether that's you, or the person sitting next to you.
 
-Claude Code's status line reports account-wide rate-limit percentages, but on a
-shared account those numbers are the same for everyone — they don't tell you how
-much of that shared budget *you* personally used. This extension:
+Claude Room splits that one blended number into a per-person breakdown. You see your own
+share in VS Code. Your team sees the whole picture on the dashboard.
 
-- Installs a status-line hook script (`media/usage-logger.js`) that reads Claude
-  Code's status-line JSON on every render and appends a local snapshot whenever the
-  5h%, 7d%, or cost numbers change.
-- Shows a status bar item and a "Claude Usage: Show my usage" panel with the
-  account's 5h/7d limits, your cost/tokens in the current window, and a table of
-  daily peaks — computed entirely from your local log.
-- Optionally syncs your snapshots to a shared Supabase project so the panel can
-  also show "you ≈ X% of the shared 5h limit (team at Y%)", by combining everyone's
-  per-device cost against the account-wide percentage. Sync is additive: if it's
-  disabled or unreachable, the local-only view keeps working.
+**→ Dashboard: [claude-room.vercel.app/dashboard](https://claude-room.vercel.app/dashboard)**
+
+---
+
+## Quick start
+
+1. **Install** this extension and reload VS Code.
+2. **Use Claude Code like you normally would.** Your usage appears in the status bar
+   within a minute of your next session.
+3. **Set your name** *(optional)* — your usage is labeled with your git identity. If your
+   team won't recognize it, set `claudeUsage.userNameOverride` in VS Code settings.
+
+There's no sign-up, no API key, and no configuration. The extension detects which Claude
+account you're signed into and wires itself into Claude Code automatically.
+
+## What a "Room" is
+
+A **Room** is one shared Claude account. Its members are the people signed into it.
+
+You never create a Room or join one. The extension reads which Claude account you're
+logged into on this machine and places you in that Room. Everyone on the same account
+lands in the same Room automatically. People on other accounts never see your usage, and
+you never see theirs.
+
+## What you'll see
+
+### In VS Code
+
+A **status bar item** shows your live share of the shared 5-hour limit, and turns amber
+then red as the Room approaches its limit — so you notice before you're cut off.
+
+Click it (or run **`Claude Room: Show my usage`** from the command palette) to open the
+panel:
+
+- Your estimated slice of the 5-hour limit, next to where the whole Room sits
+- Your cost, tokens, sessions, and current model for the active window
+- How full each of your sessions' context windows are
+- A day-by-day table of your own activity
+- A link straight to the Room dashboard
+
+### On the dashboard
+
+The Room owner signs in with GitHub at
+**[claude-room.vercel.app/dashboard](https://claude-room.vercel.app/dashboard)** and gets
+the view no single machine can produce:
+
+| Page | What it answers |
+|---|---|
+| **Overview** | How much of the limit the Room has burned, how fast, and who's driving it |
+| **Members** | Each person's slice, cost, tokens, model — with idle members dimmed |
+| **History** | Usage over time, day by day |
+| **Settings** | Name your Room |
+
+Sign-in is matched against the Room's Claude account email on the server, so an owner only
+ever reaches their own Room. You can jump there from the panel header, or run
+**`Claude Room: Open Room dashboard`**.
+
+## What people use it for
+
+**"Who used up the 5-hour limit?"** The classic shared-account argument. Instead of
+guessing, the Room dashboard shows the split — usually one long agentic session, not the
+person everyone suspected.
+
+**"Can I start this big refactor right now?"** Check the status bar first. If the Room is
+at 85% with two hours until reset, you'll know to save the heavy work rather than getting
+cut off halfway through.
+
+**"Is one account still enough for us?"** Watch the history over a few weeks. A Room that
+regularly hits its ceiling is telling you it's time for another seat — and the member
+breakdown shows who needs it most.
+
+**"Are we sharing this fairly?"** Not to police anyone, but because a shared limit is a
+shared resource. When everyone can see the split, heavy sessions get scheduled around each
+other instead of colliding.
+
+**"Which model is eating our budget?"** The member view shows each person's current model
+and cost, which usually makes it obvious where switching to a lighter model would pay off.
+
+> **About the cost figures:** everything is labeled *API-equivalent*. On a Max or Team
+> plan these are **not real charges** — nobody is billed for them. They're the yardstick
+> used to measure who consumed which share of the plan.
 
 ## What data is collected
 
-**Locally** (always, in `~/.claude/team-usage/local-log.jsonl`): cost, token
-counts, 5h/7d percentages and reset timestamps, model name, session id, and
-timestamp. The status-line hook itself makes no network calls — it only writes
-this local file.
+**Usage measurements only.** Never your prompts, your code, your files, your file paths,
+or anything else from your conversations or workspace. None of that is read, logged, or
+sent anywhere.
 
-**Synced to Supabase** (only if `claudeUsage.supabaseUrl` /
-`claudeUsage.supabaseAnonKey` are set — on by default to the shared team project,
-see below): the same aggregate fields, plus your configured/derived user name and a
-machine label. Specifically: `user_name`, `machine`, `session_id`, `cost_usd`,
-`five_hour_pct`, `five_hour_resets_at`, `seven_day_pct`, `seven_day_resets_at`,
-`model`, `input_tokens`, `output_tokens`, `recorded_at`.
+**On your machine** (`~/.claude/team-usage/local-log.jsonl`): cost, token counts, 5h/7d
+percentages and reset times, per-session context usage, model name, session id, and
+timestamp.
 
-**Never collected or transmitted, by design:** prompts, code, file contents, file
-paths, or anything else from your conversations or workspace. The Supabase anon
-key shipped as the default is insert-only and can only call an aggregates-only RPC
-— it cannot read back anyone's raw rows.
+**Shared with your Room:** those same measurements, plus the label identifying you, your
+machine's name, and your Claude account's email — the last of which is what groups you
+into the right Room. In full: `user_name`, `machine`, `account_email`, `session_id`,
+`cost_usd`, `five_hour_pct`, `five_hour_resets_at`, `seven_day_pct`,
+`seven_day_resets_at`, `model`, `input_tokens`, `output_tokens`, `context_used_pct`,
+`recorded_at`.
 
-To disable sync entirely, set `claudeUsage.supabaseUrl` (or
-`claudeUsage.supabaseAnonKey`) to an empty string in your VS Code settings. The
-local-only status bar and panel keep working either way.
+The credentials shipped with this extension can only **add** snapshots and read back
+**aggregates** — they cannot read anyone's raw rows, including yours.
 
-## Install from VSIX
+**Want to keep everything local?** Clear `claudeUsage.supabaseUrl` in VS Code settings.
+Sharing stops immediately, the status bar and panel keep working from your local log, and
+you simply won't appear on the Room dashboard.
 
-1. Get `claude-team-usage-<version>.vsix` (built via `pnpm dlx @vscode/vsce package`
-   from the `extension/` directory — see below).
-2. In VS Code: Extensions view → `...` menu → **Install from VSIX...** → select the
-   file. Or from the command line: `code --install-extension claude-team-usage-<version>.vsix`.
-3. Reload the window. The extension wires itself up automatically — no manual setup
-   is required for a shared-account teammate beyond installing it.
+## Settings
 
-### Settings
+| Setting | What it's for |
+|---|---|
+| `claudeUsage.userNameOverride` | The name your teammates see next to your usage. Leave empty to use your git identity. |
+| `claudeUsage.supabaseUrl` | Where your Room lives. Pre-filled — clear it to stop sharing and go local-only. |
+| `claudeUsage.supabaseAnonKey` | Your Room's publishable key. Pre-filled — you shouldn't need to touch it. |
 
-| Setting | Default | Purpose |
-|---|---|---|
-| `claudeUsage.supabaseUrl` | shared team project URL | Where snapshots sync to. Empty disables sync. |
-| `claudeUsage.supabaseAnonKey` | shared team project anon key | Insert-only, aggregates-only key. Empty disables sync. |
-| `claudeUsage.userNameOverride` | *(empty)* | Label shown in shared usage data. Leave empty to auto-derive from your git identity (or a generated device id if git isn't configured). |
+## Questions you might have
 
-Most developers only need to check that `userNameOverride` resolves to something
-recognizable — no other setup is required to get syncing working out of the box.
+**Nothing shows up in my status bar.** Claude Room reports on Claude Code sessions, so it
+stays quiet until you've run one. Give it a minute after your first session — it refreshes
+every 30 seconds.
 
-## Building the .vsix
+**A teammate is missing from the dashboard.** They appear once they've run a Claude Code
+session *with this extension installed*. Sessions on machines without it still count
+against the shared limit but can't be attributed to anyone.
 
-```
-cd extension
-pnpm install
-pnpm dlx @vscode/vsce package
-```
+**It says my account is "unknown".** The extension couldn't read which Claude account
+you're signed into, so it can't tell which Room you belong to. Sign in to Claude Code,
+then reload VS Code.
 
-This produces `claude-team-usage-<version>.vsix` in the `extension/` directory.
+**How accurate are the slices?** They're informed estimates, not an official meter. Claude
+reports usage per *account*, never per person — so each member's share is derived
+proportionally from their measured cost within the current window. Good enough to settle
+"who used the limit," not a billing-grade audit.
 
-## Schema-version note
-
-`media/usage-logger.js` and `src/usage.ts` parse Claude Code's status-line JSON by
-field name (see `sample-status.json` for the shape this was built and tested
-against). If Claude Code changes the status-line payload's schema — renamed,
-restructured, or removed fields, especially under `rate_limits` or `cost` — rebuild
-and re-run this extension's test suite (`pnpm test`, which runs
-`scripts/verify-edge-cases.js`) against a fresh sample payload before relying on it
-again. Every field access is null-safe, so a schema change degrades to missing
-numbers rather than a crash, but the numbers shown could silently become wrong
-(e.g. always zero) until this is checked.
+**Does it work offline?** Yes. The panel and status bar read from your local log and never
+need the network. If sharing can't reach your Room, snapshots queue up locally and catch up
+later — nothing is lost and nothing stops working.

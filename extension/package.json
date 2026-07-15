@@ -2,15 +2,23 @@
     "name": "claude-room",
     "displayName": "Claude Room",
     "description": "See your Room's share of a shared Claude Pro/Max plan's 5-hour and 7-day limits.",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "publisher": "ashfaqe",
     "private": true,
     "icon": "media/icon.png",
+    "homepage": "https://claude-room.vercel.app/",
     "engines": {
         "vscode": "^1.85.0"
     },
     "categories": [
         "Other"
+    ],
+    "keywords": [
+        "claude",
+        "claude code",
+        "usage",
+        "rate limit",
+        "team"
     ],
     "activationEvents": [
         "onStartupFinished"
@@ -21,6 +29,10 @@
             {
                 "command": "claudeTeamUsage.showUsage",
                 "title": "Claude Room: Show my usage"
+            },
+            {
+                "command": "claudeTeamUsage.openDashboard",
+                "title": "Claude Room: Open Room dashboard"
             }
         ],
         "configuration": {

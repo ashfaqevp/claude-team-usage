@@ -11,6 +11,15 @@ watch(user, (u) => {
   if (u) window.location.href = '/dashboard'
 })
 
+// Outbound destinations, kept in one place so the nav/hero/extension/footer CTAs
+// can't drift apart. The marketplace slugs are `<publisher>.<name>` from
+// ../extension/package.json (publisher `ashfaqe`, name `claude-room`) — if either
+// is renamed there, both URLs below must change with it.
+const MARKETPLACE_URL = 'https://marketplace.visualstudio.com/items?itemName=ashfaqe.claude-room'
+const OPEN_VSX_URL = 'https://open-vsx.org/extension/ashfaqe/claude-room'
+const COFFEE_URL = 'https://buymeacoffee.com/ashfaqe'
+const GITHUB_URL = 'https://github.com/ashfaqevp/claude-team-usage'
+
 useHead({
   title: 'Claude Room — Split your shared Claude usage, per person',
   meta: [
@@ -37,7 +46,10 @@ useHead({
           <a href="#extension" class="nl">Extension</a>
         </div>
         <div style="display:flex; align-items:center; gap:10px;">
-          <a href="#coffee" class="btnp cr-coffee" style="display:inline-flex; align-items:center; gap:7px; padding:9px 15px; border-radius:9px; font-weight:600; font-size:13.5px;">☕ Buy me a coffee</a>
+          <a :href="COFFEE_URL" target="_blank" rel="noopener" class="btnp cr-coffee" style="display:inline-flex; align-items:center; gap:7px; padding:9px 15px; border-radius:9px; font-weight:600; font-size:13.5px;">
+            <Icon name="selfhst:buy-me-a-coffee" mode="svg" size="16" />
+            Buy me a coffee
+          </a>
           <NuxtLink v-if="!user" to="/login" class="btnp" style="display:inline-flex; align-items:center; gap:7px; background:var(--surface); color:var(--ink); border:1px solid var(--border); padding:9px 16px; border-radius:9px; font-weight:500; font-size:13.5px;">Sign in</NuxtLink>
           <NuxtLink v-else to="/dashboard" class="btnp" style="display:inline-flex; align-items:center; gap:7px; background:var(--accent); color:#fff; padding:9px 16px; border-radius:9px; font-weight:500; font-size:13.5px;">Go to dashboard</NuxtLink>
         </div>
@@ -54,10 +66,13 @@ useHead({
       <h1 class="serif cr-h1" style="font-weight:500; font-size:66px; line-height:1.03; letter-spacing:-.025em; margin-top:24px; text-wrap:balance;">One shared account.<br>Everyone's usage, <span style="font-style:italic; color:var(--accent-ink);">finally split.</span></h1>
       <p style="font-size:19px; line-height:1.55; color:var(--ink2); margin:22px auto 0; max-width:35em;">Claude Code shows a single usage number for the whole account — the same on every machine. Claude Room breaks it down per person, so you can see exactly whose sessions are driving the limit before you hit it.</p>
       <div style="display:flex; gap:12px; justify-content:center; margin-top:32px; flex-wrap:wrap;">
-        <a href="#install" class="btnp" style="display:inline-flex; align-items:center; gap:9px; background:var(--accent); color:#fff; padding:14px 24px; border-radius:10px; font-weight:500; font-size:15.5px;">Get the extension
-          <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M4 8h8M8 4l4 4-4 4" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <NuxtLink to="/dashboard" class="btnp" style="display:inline-flex; align-items:center; gap:9px; background:var(--accent); color:#fff; padding:14px 24px; border-radius:10px; font-weight:500; font-size:15.5px;">Go to dashboard
+          <Icon name="lucide:arrow-right" size="15" style="color:#fff;" />
+        </NuxtLink>
+        <a href="#install" class="btnp" style="display:inline-flex; align-items:center; gap:9px; background:var(--surface); color:var(--ink); padding:14px 24px; border-radius:10px; font-weight:500; font-size:15.5px; border:1px solid var(--border);">
+          <Icon name="lucide:download" size="15" />
+          Get the extension
         </a>
-        <NuxtLink to="/dashboard" style="display:inline-flex; align-items:center; gap:9px; background:var(--surface); color:var(--ink); padding:14px 24px; border-radius:10px; font-weight:500; font-size:15.5px; border:1px solid var(--border);">See a live dashboard</NuxtLink>
       </div>
       <p class="mono" style="font-size:12.5px; color:var(--ink3); margin-top:18px;">zero config · works offline · free &amp; open source</p>
 
@@ -158,13 +173,13 @@ useHead({
         </div>
         <!-- privacy -->
         <div style="background:var(--surface); border:1px solid var(--border); border-radius:18px; padding:28px; box-shadow:var(--shadow);">
-          <svg width="26" height="26" viewBox="0 0 24 24" fill="none"><path d="M12 2l7 3v6c0 4.5-3 8-7 9-4-1-7-4.5-7-9V5l7-3z" stroke="var(--accent)" stroke-width="1.5" stroke-linejoin="round"/><path d="M9 12l2 2 4-4" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <Icon name="lucide:shield-check" size="26" style="color:var(--accent);" />
           <h3 class="serif" style="font-size:21px; font-weight:500; margin-top:14px;">Numbers only, never content</h3>
           <p style="font-size:14px; line-height:1.55; color:var(--ink2); margin-top:8px;">Cost, tokens, and percentages leave your machine — prompts, code, and files never do. By design, not policy.</p>
         </div>
         <!-- zero config -->
         <div style="background:var(--surface); border:1px solid var(--border); border-radius:18px; padding:28px; box-shadow:var(--shadow);">
-          <svg width="26" height="26" viewBox="0 0 24 24" fill="none"><path d="M12 2v4M12 18v4M2 12h4M18 12h4M5 5l2.5 2.5M16.5 16.5L19 19M19 5l-2.5 2.5M7.5 16.5L5 19" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round"/><circle cx="12" cy="12" r="3.2" stroke="var(--accent)" stroke-width="1.5"/></svg>
+          <Icon name="lucide:settings" size="26" style="color:var(--accent);" />
           <h3 class="serif" style="font-size:21px; font-weight:500; margin-top:14px;">Zero configuration</h3>
           <p style="font-size:14px; line-height:1.55; color:var(--ink2); margin-top:8px;">Install the extension and it wires Claude Code's status-line hook itself. Nothing to set up, works offline first.</p>
         </div>
@@ -219,9 +234,17 @@ useHead({
             <div class="mono" style="font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--accent-ink);">In your editor</div>
             <h2 class="serif" style="font-weight:500; font-size:38px; line-height:1.12; letter-spacing:-.02em; margin-top:14px;">Your slice, without leaving VS Code.</h2>
             <p style="font-size:16.5px; line-height:1.6; color:var(--ink2); margin-top:18px;">A live status-bar item and a full panel: your share of the room, the team's pace, your cost and tokens this window, per-session context, and recent activity — all scoped to <em>your</em> room, never the account-wide blend.</p>
-            <a href="#install" style="display:inline-flex; align-items:center; gap:8px; margin-top:24px; font-weight:500; font-size:15px; border:1px solid var(--border); background:var(--surface); color:var(--ink); padding:12px 20px; border-radius:10px;">Explore the panel
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M4 8h8M8 4l4 4-4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            </a>
+            <div id="install" style="display:flex; gap:12px; margin-top:24px; flex-wrap:wrap;">
+              <a :href="MARKETPLACE_URL" target="_blank" rel="noopener" class="btnp" style="display:inline-flex; align-items:center; gap:9px; background:var(--accent); color:#fff; padding:12px 20px; border-radius:10px; font-weight:500; font-size:15px;">
+                <Icon name="simple-icons:visualstudiocode" size="16" style="color:#fff;" />
+                VS Code Marketplace
+              </a>
+              <a :href="OPEN_VSX_URL" target="_blank" rel="noopener" class="btnp" style="display:inline-flex; align-items:center; gap:9px; border:1px solid var(--border); background:var(--surface); color:var(--ink); padding:12px 20px; border-radius:10px; font-weight:500; font-size:15px;">
+                <Icon name="simple-icons:eclipseide" size="16" />
+                Open VSX
+              </a>
+            </div>
+            <p class="mono" style="font-size:12.5px; color:var(--ink3); margin-top:14px;">for VS Code, Cursor, Windsurf &amp; VSCodium</p>
           </div>
           <!-- editor frame mock -->
           <div style="border-radius:14px; overflow:hidden; border:1px solid #0A0A0A; box-shadow:var(--shadow);">
@@ -251,26 +274,29 @@ useHead({
 
     <!-- COFFEE / PRICING -->
     <section id="coffee" style="border-top:1px solid var(--border); background:var(--bg2);">
-      <div id="install" style="max-width:1200px; margin:0 auto; padding:80px 32px;">
+      <div style="max-width:1200px; margin:0 auto; padding:80px 32px;">
         <div class="cr-grid2" style="background:var(--dark); border-radius:22px; padding:52px 48px; color:#EDEAE3; box-shadow:var(--shadow); display:grid; grid-template-columns:1.2fr 0.8fr; gap:48px; align-items:center;">
           <div>
             <div class="mono" style="font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:#8FA99C;">Free &amp; open source</div>
             <h2 class="serif" style="font-weight:500; font-size:40px; line-height:1.08; letter-spacing:-.02em; margin-top:14px;">Install it today. Split your usage tonight.</h2>
             <p style="font-size:16px; line-height:1.6; color:#B7B1A6; margin-top:16px; max-width:32em;">Claude Room is free and open source — no seats, no plan, no catch. If it saves your team a headache, the nicest thing you can do is buy me a coffee.</p>
             <div style="display:flex; gap:12px; margin-top:28px; flex-wrap:wrap;">
-              <a href="#top" class="btnp" style="display:inline-flex; align-items:center; gap:9px; background:var(--accent); color:#fff; padding:14px 24px; border-radius:11px; font-weight:500; font-size:15.5px;">Get the extension
-                <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M4 8h8M8 4l4 4-4 4" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              </a>
-              <a href="#top" class="btnp" style="display:inline-flex; align-items:center; gap:9px; background:#211F1C; color:#EDEAE3; padding:14px 22px; border-radius:11px; font-weight:500; font-size:15px; border:1px solid #34322C;">
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="#EDEAE3"><path d="M8 .2a8 8 0 0 0-2.5 15.6c.4.1.5-.2.5-.4v-1.4c-2 .4-2.5-.5-2.7-1-.1-.3-.6-1-1-1.2-.3-.2-.8-.6 0-.6.7 0 1.2.7 1.4 1 .8 1.3 2 1 2.6.7.1-.6.3-1 .6-1.2-2-.2-3.7-1-3.7-4.4 0-1 .3-1.7.9-2.4-.1-.2-.4-1.1.1-2.3 0 0 .7-.2 2.4.9a8.2 8.2 0 0 1 4.4 0c1.7-1.1 2.4-.9 2.4-.9.5 1.2.2 2.1.1 2.3.6.7.9 1.4.9 2.4 0 3.4-2 4.2-4 4.4.4.3.6.8.6 1.6v2.4c0 .2.2.5.6.4A8 8 0 0 0 8 .2z"/></svg>
+              <NuxtLink to="/dashboard" class="btnp" style="display:inline-flex; align-items:center; gap:9px; background:var(--accent); color:#fff; padding:14px 24px; border-radius:11px; font-weight:500; font-size:15.5px;">Go to dashboard
+                <Icon name="lucide:arrow-right" size="15" style="color:#fff;" />
+              </NuxtLink>
+              <a :href="GITHUB_URL" target="_blank" rel="noopener" class="btnp" style="display:inline-flex; align-items:center; gap:9px; background:#211F1C; color:#EDEAE3; padding:14px 22px; border-radius:11px; font-weight:500; font-size:15px; border:1px solid #34322C;">
+                <Icon name="simple-icons:github" size="16" style="color:#EDEAE3;" />
                 Star on GitHub
               </a>
             </div>
           </div>
           <div style="display:flex; flex-direction:column; align-items:center; gap:16px; background:#211F1C; border:1px solid #34322C; border-radius:18px; padding:32px;">
-            <div style="font-size:52px;">☕</div>
+            <Icon name="selfhst:buy-me-a-coffee" mode="svg" size="52" />
             <div style="text-align:center;"><div class="serif" style="font-size:22px;">Enjoying Claude Room?</div><div style="font-size:13.5px; color:#8F887C; margin-top:4px;">A coffee keeps it maintained.</div></div>
-            <a href="#coffee" class="btnp cr-coffee" style="display:inline-flex; align-items:center; gap:9px; padding:13px 22px; border-radius:11px; font-weight:600; font-size:15px;">☕ Buy me a coffee</a>
+            <a :href="COFFEE_URL" target="_blank" rel="noopener" class="btnp cr-coffee" style="display:inline-flex; align-items:center; gap:9px; padding:13px 22px; border-radius:11px; font-weight:600; font-size:15px;">
+              <Icon name="selfhst:buy-me-a-coffee" mode="svg" size="18" />
+              Buy me a coffee
+            </a>
           </div>
         </div>
       </div>
@@ -280,10 +306,15 @@ useHead({
     <footer style="border-top:1px solid var(--border);">
       <div class="cr-footer" style="max-width:1200px; margin:0 auto; padding:40px 32px; display:flex; align-items:center; justify-content:space-between; gap:24px; flex-wrap:wrap;">
         <BrandLogo :size="26" wordmark-class="text-base" />
-        <div style="display:flex; gap:22px; font-size:13.5px;">
+        <div style="display:flex; gap:22px; font-size:13.5px; flex-wrap:wrap; justify-content:center;">
           <NuxtLink to="/dashboard" class="nl">Dashboard</NuxtLink>
-          <a href="#extension" class="nl">Extension</a>
-          <a href="#coffee" class="nl">Buy me a coffee</a>
+          <a :href="MARKETPLACE_URL" target="_blank" rel="noopener" class="nl">VS Marketplace</a>
+          <a :href="OPEN_VSX_URL" target="_blank" rel="noopener" class="nl">Open VSX</a>
+          <a :href="GITHUB_URL" target="_blank" rel="noopener" class="nl">GitHub</a>
+          <a :href="COFFEE_URL" target="_blank" rel="noopener" class="nl" style="display:inline-flex; align-items:center; gap:6px;">
+            <Icon name="selfhst:buy-me-a-coffee" mode="svg" size="14" />
+            Buy me a coffee
+          </a>
         </div>
         <div style="font-size:12px; color:var(--ink3); max-width:24em; text-align:right;">An independent tool for Claude Code teams. Not affiliated with or endorsed by Anthropic.</div>
       </div>

@@ -24,6 +24,7 @@ const LOCAL_LOG_FILE = path.join(TEAM_USAGE_DIR, 'local-log.jsonl');
 const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.json');
 
 const STATUS_BAR_UPDATE_INTERVAL_MS = 30_000;
+const DASHBOARD_URL = 'https://claude-room.vercel.app/dashboard';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   installLogger(context);
@@ -46,6 +47,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.commands.registerCommand('claudeTeamUsage.showUsage', () => {
       showUsagePanel(context);
+    }),
+    vscode.commands.registerCommand('claudeTeamUsage.openDashboard', () => {
+      vscode.env.openExternal(vscode.Uri.parse(DASHBOARD_URL));
     })
   );
 }
@@ -230,7 +234,8 @@ function paintStatusBar(
   if (contextsLine) {
     tooltip.appendMarkdown(`Context usage (per session): ${contextsLine}\n\n`);
   }
-  tooltip.appendMarkdown(`_Click for the full Claude Room panel._`);
+  tooltip.appendMarkdown(`_Click for the full Claude Room panel._\n\n`);
+  tooltip.appendMarkdown(`[Open Room dashboard ↗](${DASHBOARD_URL})`);
   item.tooltip = tooltip;
 
   const pct = effectiveFiveHourPct(summary, teamSlice);
@@ -329,6 +334,14 @@ function panelStyles(): string {
   .header { margin-bottom: 1.2em; }
   .title-row { display: flex; align-items: baseline; gap: 0.6em; flex-wrap: wrap; }
   .room-name { font-size: 1.1em; color: var(--vscode-descriptionForeground); }
+  .dashboard-link {
+    margin-left: auto;
+    font-size: 0.85em;
+    color: var(--vscode-textLink-foreground);
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .dashboard-link:hover { color: var(--vscode-textLink-activeForeground); text-decoration: underline; }
   .account-line {
     margin-top: 0.4em;
     font-size: 0.9em;
@@ -678,6 +691,7 @@ function renderHtml(args: {
     <div class="title-row">
       <h1>Claude Room</h1>
       ${roomName ? `<span class="room-name">${escapeHtml(roomName)}</span>` : ''}
+      <a class="dashboard-link" href="${DASHBOARD_URL}">Open Room dashboard ↗</a>
     </div>
     ${
       accountEmail
